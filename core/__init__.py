@@ -1,0 +1,1 @@
+"""Shared Hysteria VPN business logic."""

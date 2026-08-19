@@ -1,0 +1,13 @@
+# Everything ships with LF: a shell script with CRLF fails on Linux
+# ("$'\r': command not found", broken heredocs), and a \r inside an
+# EnvironmentFile value ends up inside the secret.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.py      text eol=lf
+*.service text eol=lf
+*.timer   text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.example text eol=lf
+bin/hyvpn text eol=lf

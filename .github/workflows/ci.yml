@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Run tests
+        env:
+          BOT_TOKEN: "123456:TEST"
+          ALLOWED_TG_IDS: "1"
+          SERVER_DOMAIN: "vpn.example.com"
+          HYSTERIA_STATS_SECRET: "test-secret"
+        run: pytest -q
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ruff
+        run: |
+          pip install ruff
+          ruff check .
+      - name: Shell syntax
+        run: |
+          bash -n install.sh
+          bash -n bin/hyvpn
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning install.sh bin/hyvpn
+
+  installer:
+    name: install.sh on ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "ubuntu:22.04", "debian:12"]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Bootstrap the container
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq sudo curl ca-certificates git
+      - uses: actions/checkout@v4
+      # systemd, hysteria and the firewall cannot run inside a container, so
+      # --dry-run exercises everything else: packages, user, directories,
+      # permissions, venv, dependencies and the generated configuration.
+      - name: Run the installer (dry-run)
+        run: |
+          bash install.sh --dry-run \
+            --domain vpn.example.com \
+            --email admin@example.com \
+            --bot-token 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw \
+            --admin-id 123456789 \
+            --location "Test Location" \
+            --lang en \
+            --no-ufw
+      - name: Check the result
+        run: |
+          set -eux
+          test -f /etc/hyvpn/.env.core
+          test -f /etc/hyvpn/.env.bot
+          test -f /etc/hyvpn/.env.hysteria
+          test "$(stat -c '%a %U:%G' /etc/hyvpn/.env.bot)" = "640 root:hyvpn"
+          test -x /opt/hyvpn/.venv/bin/python
+          test -x /usr/local/bin/hyvpn
+          grep -q '^ALLOWED_TG_IDS=123456789$' /etc/hyvpn/.env.bot
+          grep -q '^DEFAULT_LANG=en$' /etc/hyvpn/.env.bot
+          # The Traffic Stats secret must be identical in all three files.
+          core=$(sed -n 's/^HYSTERIA_STATS_SECRET=//p' /etc/hyvpn/.env.core)
+          bot=$(sed -n 's/^HYSTERIA_STATS_SECRET=//p' /etc/hyvpn/.env.bot)
+          hys=$(sed -n 's/^TRAFFIC_STATS_SECRET=//p' /etc/hyvpn/.env.hysteria)
+          test -n "$core" && test "$core" = "$bot" && test "$core" = "$hys"
+      - name: The CLI works as the service user
+        run: |
+          cd /opt/hyvpn
+          sudo -u hyvpn env PYTHONPATH=/opt/hyvpn .venv/bin/python hy-cli.py \
+            create-key --label "ci-key" --limit 10GB
+          sudo -u hyvpn env PYTHONPATH=/opt/hyvpn .venv/bin/python hy-cli.py list-keys
+      - name: Re-running keeps the secret and the database
+        run: |
+          set -eux
+          before=$(sed -n 's/^TRAFFIC_STATS_SECRET=//p' /etc/hyvpn/.env.hysteria)
+          keys_before=$(sqlite3 /var/lib/hyvpn/hyvpn.sqlite3 "SELECT COUNT(*) FROM keys;")
+          bash install.sh --dry-run --no-ufw
+          after=$(sed -n 's/^TRAFFIC_STATS_SECRET=//p' /etc/hyvpn/.env.hysteria)
+          keys_after=$(sqlite3 /var/lib/hyvpn/hyvpn.sqlite3 "SELECT COUNT(*) FROM keys;")
+          test "$before" = "$after"
+          test "$keys_before" = "$keys_after"

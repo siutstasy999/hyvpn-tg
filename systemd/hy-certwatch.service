@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh the hyvpn TLS certificate status snapshot
+After=hysteria-server.service
+Documentation=https://github.com/siutstasy999/hyvpn-tg
+
+[Service]
+Type=oneshot
+# Runs as root on purpose: the ACME directory belongs to the hysteria user,
+# while hy-bot and hy-core run as hyvpn and only read the JSON snapshot.
+User=root
+EnvironmentFile=/etc/hyvpn/.env.core
+WorkingDirectory=/opt/hyvpn
+ExecStart=/bin/sh -c '/usr/bin/python3 /opt/hyvpn/bin/cert_probe.py "$SERVER_DOMAIN" "$${ACME_DIR:-/var/lib/hysteria/acme}" "$${CERT_STATUS_PATH:-/var/lib/hyvpn/cert.json}"'
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+[Unit]
+Description=Hysteria2 VPN Telegram bot
+After=network-online.target hy-core.service
+Wants=network-online.target hy-core.service
+
+[Service]
+Type=simple
+User=hyvpn
+Group=hyvpn
+WorkingDirectory=/opt/hyvpn
+Environment="PYTHONPATH=/opt/hyvpn"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/hyvpn/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hyvpn
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

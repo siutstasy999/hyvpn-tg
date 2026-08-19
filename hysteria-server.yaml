@@ -1,0 +1,23 @@
+# Template. Do not put real secrets into git.
+# systemd renders this to /run/hyvpn/hysteria-server.yaml.
+listen: :443
+
+acme:
+  domains:
+    - ${ACME_DOMAIN}
+  email: ${ACME_EMAIL}
+  # Written by the hysteria user (StateDirectory=hysteria).
+  dir: /var/lib/hysteria/acme
+
+auth:
+  type: http
+  http:
+    url: http://127.0.0.1:8080/auth
+    insecure: false
+
+trafficStats:
+  listen: 127.0.0.1:9999
+  secret: ${TRAFFIC_STATS_SECRET}
+
+# No masquerade is required by the specification.
+# If you want HTTP/3 masquerading, add a configured masquerade section.

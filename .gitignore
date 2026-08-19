@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.*.example
+*.sqlite3
+*.db
+.pytest_cache/
+.ruff_cache/
+cert.json
+*.egg-info/
+build/
+dist/
+
+# SQLite in WAL mode creates companion files that *.sqlite3 does not match
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# other venv names
+venv/
+env/
+
+# editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+
+# tooling
+.mypy_cache/
+.coverage
+htmlcov/
+
+# misc
+*.log
+*.tar.gz
+.requirements.min

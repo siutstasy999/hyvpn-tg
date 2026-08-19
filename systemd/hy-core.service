@@ -1,0 +1,32 @@
+[Unit]
+Description=Hysteria2 VPN core auth and traffic statistics service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Must match hy-bot: both processes write the same SQLite database.
+User=hyvpn
+Group=hyvpn
+WorkingDirectory=/opt/hyvpn
+Environment="PYTHONPATH=/opt/hyvpn"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/hyvpn/.venv/bin/uvicorn hy_core_app:app     --host 127.0.0.1 --port 8080 --workers 1 --loop uvloop
+Restart=always
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hyvpn
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

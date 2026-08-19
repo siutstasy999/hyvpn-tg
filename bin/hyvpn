@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+#
+# hyvpn — management wrapper installed to /usr/local/bin by install.sh.
+#
+set -Eeuo pipefail
+
+INSTALL_DIR=/opt/hyvpn
+CONF_DIR=/etc/hyvpn
+DATA_DIR=/var/lib/hyvpn
+SERVICE_USER=hyvpn
+DB="$DATA_DIR/hyvpn.sqlite3"
+REPO="${HYVPN_REPO:-siutstasy999/hyvpn-tg}"
+REF="${HYVPN_REF:-main}"
+
+if [[ -t 1 ]]; then
+    BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GREEN=$'\033[32m'
+    YELLOW=$'\033[33m'; RESET=$'\033[0m'
+else
+    BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; RESET=""
+fi
+
+die() { printf '%serror:%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
+
+require_root() {
+    [[ ${EUID:-$(id -u)} -eq 0 ]] || die "run with sudo"
+}
+
+cli() {
+    require_root
+    (cd "$INSTALL_DIR" && sudo -u "$SERVICE_USER" \
+        env PYTHONPATH="$INSTALL_DIR" "$INSTALL_DIR/.venv/bin/python" hy-cli.py "$@")
+}
+
+env_value() {
+    [[ -r "$1" ]] || return 0
+    sed -n "s/^$2=//p" "$1" | tail -n1
+}
+
+usage() {
+    cat <<EOF
+${BOLD}hyvpn${RESET} — Hysteria2 VPN management
+
+  ${BOLD}hyvpn status${RESET}                      services, certificate, key count
+  ${BOLD}hyvpn key ls${RESET} [--all]              list keys
+  ${BOLD}hyvpn key add${RESET} LABEL [SIZE]        issue a key, optional quota (50GB)
+  ${BOLD}hyvpn key show${RESET} ID                 details and connection URI
+  ${BOLD}hyvpn key qr${RESET} ID                   QR code in the terminal
+  ${BOLD}hyvpn key rm${RESET} ID                   revoke a key
+  ${BOLD}hyvpn key rename${RESET} ID LABEL         rename a key
+  ${BOLD}hyvpn key limit${RESET} ID SIZE           set quota (0 removes it)
+  ${BOLD}hyvpn key reset${RESET} ID                zero the traffic counters
+  ${BOLD}hyvpn stats${RESET} [ID|--all]            live traffic statistics
+  ${BOLD}hyvpn cert${RESET}                        refresh and show certificate state
+  ${BOLD}hyvpn logs${RESET} [core|bot|hysteria|cert] [N]
+  ${BOLD}hyvpn restart${RESET} [core|bot|hysteria|all]
+  ${BOLD}hyvpn backup${RESET} [DIR]                consistent SQLite backup
+  ${BOLD}hyvpn update${RESET}                      upgrade to the latest release
+  ${BOLD}hyvpn uninstall${RESET}                   remove hyvpn
+EOF
+}
+
+unit_of() {
+    case "$1" in
+        core)     echo hy-core.service ;;
+        bot)      echo hy-bot.service ;;
+        hysteria) echo hysteria-server.service ;;
+        cert)     echo hy-certwatch.service ;;
+        *)        die "unknown service: $1 (core|bot|hysteria|cert)" ;;
+    esac
+}
+
+cmd_status() {
+    local domain unit state active revoked
+    domain="$(env_value "$CONF_DIR/.env.core" SERVER_DOMAIN)"
+    printf '%sСервер%s %s:%s/udp\n\n' "$BOLD" "$RESET" "${domain:-?}" \
+        "$(env_value "$CONF_DIR/.env.core" SERVER_PORT)"
+
+    for unit in hy-core.service hysteria-server.service hy-bot.service; do
+        if systemctl is-active --quiet "$unit"; then
+            state="${GREEN}active${RESET}"
+        else
+            state="${RED}inactive${RESET}"
+        fi
+        printf '  %-26s %b\n' "$unit" "$state"
+    done
+    if systemctl is-active --quiet hy-certwatch.timer; then
+        printf '  %-26s %b\n' "hy-certwatch.timer" "${GREEN}active${RESET}"
+    fi
+
+    printf '\n%sСертификат%s\n' "$BOLD" "$RESET"
+    if ! cli cert 2>/dev/null | sed 's/^/  /'; then
+        printf '  %sнеизвестно — попробуйте: hyvpn cert%s\n' "$YELLOW" "$RESET"
+    fi
+
+    if [[ -f "$DB" ]] && command -v sqlite3 >/dev/null; then
+        active="$(sqlite3 "$DB" "SELECT COUNT(*) FROM keys WHERE is_active=1;" 2>/dev/null || echo '?')"
+        revoked="$(sqlite3 "$DB" "SELECT COUNT(*) FROM keys WHERE is_active=0;" 2>/dev/null || echo '?')"
+        printf '\n%sКлючи%s %s активных, %s отозванных\n' "$BOLD" "$RESET" "$active" "$revoked"
+    fi
+}
+
+cmd_key() {
+    local action=${1:-ls}; shift || true
+    case "$action" in
+        ls|list)
+            if [[ "${1:-}" == "--all" ]]; then cli list-keys; else cli list-keys --active-only; fi
+            ;;
+        add|new)
+            local label=${1:?"usage: hyvpn key add LABEL [SIZE]"}
+            local size=${2:-0}
+            cli create-key --label "$label" --limit "$size"
+            ;;
+        show)   cli show "${1:?usage: hyvpn key show ID}" ;;
+        qr)
+            local uri
+            uri="$(cli show "${1:?usage: hyvpn key qr ID}" --uri-only)"
+            if command -v qrencode >/dev/null; then
+                qrencode -t ANSIUTF8 -m 2 "$uri"
+            else
+                die "qrencode is not installed: apt install qrencode"
+            fi
+            printf '%s\n' "$uri"
+            ;;
+        rm|revoke|del) cli revoke-key "${1:?usage: hyvpn key rm ID}" ;;
+        rename) cli rename-key "${1:?usage: hyvpn key rename ID LABEL}" "${2:?new label}" ;;
+        limit)  cli set-limit "${1:?usage: hyvpn key limit ID SIZE}" "${2:?size, e.g. 50GB or 0}" ;;
+        reset)  cli reset-traffic "${1:?usage: hyvpn key reset ID}" ;;
+        *)      die "unknown key command: $action" ;;
+    esac
+}
+
+cmd_logs() {
+    require_root
+    local target=${1:-bot} lines=${2:-100}
+    journalctl -u "$(unit_of "$target")" -n "$lines" --no-pager
+}
+
+cmd_restart() {
+    require_root
+    local target=${1:-all}
+    if [[ "$target" == "all" ]]; then
+        systemctl restart hy-core.service hysteria-server.service hy-bot.service
+        printf '%s✓%s restarted: core, hysteria, bot\n' "$GREEN" "$RESET"
+    else
+        systemctl restart "$(unit_of "$target")"
+        printf '%s✓%s restarted: %s\n' "$GREEN" "$RESET" "$(unit_of "$target")"
+    fi
+}
+
+cmd_cert() {
+    require_root
+    systemctl start hy-certwatch.service >/dev/null 2>&1 || true
+    cli cert
+}
+
+cmd_backup() {
+    require_root
+    command -v sqlite3 >/dev/null || die "sqlite3 is not installed"
+    [[ -f "$DB" ]] || die "database not found: $DB"
+    local dir=${1:-$DATA_DIR/backups}
+    install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$dir"
+    local target="$dir/hyvpn-$(date +%Y%m%d-%H%M%S).sqlite3"
+    sqlite3 "$DB" ".backup '$target'"
+    chown "$SERVICE_USER:$SERVICE_USER" "$target"
+    chmod 0640 "$target"
+    printf '%s✓%s %s\n' "$GREEN" "$RESET" "$target"
+}
+
+cmd_update() {
+    require_root
+    printf '%sОбновление до %s@%s%s\n' "$DIM" "$REPO" "$REF" "$RESET"
+    bash <(curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/install.sh") --yes \
+        || die "update failed"
+}
+
+cmd_uninstall() {
+    require_root
+    bash <(curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/install.sh") --uninstall
+}
+
+main() {
+    local command=${1:-status}; shift || true
+    case "$command" in
+        status)     cmd_status ;;
+        key|keys)   cmd_key "$@" ;;
+        stats)      cli stats "$@" ;;
+        cert)       cmd_cert ;;
+        logs|log)   cmd_logs "$@" ;;
+        restart)    cmd_restart "$@" ;;
+        backup)     cmd_backup "$@" ;;
+        update)     cmd_update ;;
+        uninstall)  cmd_uninstall ;;
+        cli)        cli "$@" ;;
+        -h|--help|help) usage ;;
+        *)          die "unknown command: $command (try: hyvpn --help)" ;;
+    esac
+}
+
+main "$@"

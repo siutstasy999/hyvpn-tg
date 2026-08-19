@@ -1,0 +1,30 @@
+[Unit]
+Description=Hysteria2 VPN server
+Documentation=https://v2.hysteria.network/
+After=network-online.target hy-core.service
+Wants=network-online.target hy-core.service
+
+[Service]
+Type=simple
+User=hysteria
+Group=hyvpn
+# ACME certificates and cache live here (created by StateDirectory=).
+StateDirectory=hysteria
+WorkingDirectory=/var/lib/hysteria
+EnvironmentFile=/etc/hyvpn/.env.hysteria
+Environment="HYSTERIA_LOG_LEVEL=info"
+RuntimeDirectory=hyvpn
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/python3 /opt/hyvpn/bin/render_hysteria_config.py /opt/hyvpn/hysteria-server.yaml /run/hyvpn/hysteria-server.yaml
+ExecStart=/usr/local/bin/hysteria server -c /run/hyvpn/hysteria-server.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+# Binding UDP/443 and tuning the tunnel as a non-root user needs these.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

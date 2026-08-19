@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the hyvpn TLS certificate twice a day
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=12h
+Persistent=true
+Unit=hy-certwatch.service
+
+[Install]
+WantedBy=timers.target
