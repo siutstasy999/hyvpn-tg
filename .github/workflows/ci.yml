@@ -72,11 +72,14 @@ jobs:
       # --dry-run exercises everything else: packages, user, directories,
       # permissions, venv, dependencies and the generated configuration.
       - name: Run the installer (dry-run)
+        # The fake token is deliberately not shaped like a real one: GitHub
+        # secret scanning flags anything matching <digits>:<35 chars>, which
+        # is what Telegram's documentation example looks like.
         run: |
           bash install.sh --dry-run \
             --domain vpn.example.com \
             --email admin@example.com \
-            --bot-token 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw \
+            --bot-token 123456789:TEST-TOKEN-NOT-A-REAL-BOT-TOKEN \
             --admin-id 123456789 \
             --location "Test Location" \
             --lang en \
