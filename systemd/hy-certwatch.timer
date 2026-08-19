@@ -1,9 +1,12 @@
 [Unit]
-Description=Check the hyvpn TLS certificate twice a day
+Description=Refresh the hyvpn TLS certificate snapshot
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=12h
+# Hourly: the snapshot is the only way hy-bot learns about the certificate,
+# and on a fresh install ACME issues it a few seconds after the first start —
+# a twice-a-day check left the bot showing "unknown" for half a day.
+OnBootSec=1min
+OnUnitActiveSec=1h
 Persistent=true
 Unit=hy-certwatch.service
 

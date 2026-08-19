@@ -91,8 +91,13 @@ def progress_bar(part: int, whole: int, width: int = 10) -> str:
 
 def cert_short(lang: str, cert: CertInfo | None) -> str:
     """One-line certificate status for the main menu."""
-    if cert is None or not cert.known:
+    if cert is None:
         return t(lang, "cert_short_unknown")
+    if not cert.known:
+        # "Not issued yet" is the normal state of a fresh server and must not
+        # look like a failure.
+        key = "cert_short_pending" if cert.missing else "cert_short_unknown"
+        return t(lang, key)
     days = cert.days_left or 0
     if cert.expired:
         return t(lang, "cert_short_expired")
@@ -103,9 +108,12 @@ def cert_short(lang: str, cert: CertInfo | None) -> str:
 
 def cert_line(lang: str, cert: CertInfo | None) -> str:
     """Full certificate status for the server screen."""
-    if cert is None or not cert.known:
-        error = cert.error if cert else ""
-        return t(lang, "server_cert_unknown", error=esc(error or "no data"))
+    if cert is None:
+        return t(lang, "server_cert_unknown", error=esc("no data"))
+    if not cert.known:
+        if cert.missing:
+            return t(lang, "server_cert_pending")
+        return t(lang, "server_cert_unknown", error=esc(cert.error or "no data"))
     days = cert.days_left or 0
     date = fmt_date(cert.not_after)
     if cert.expired:
@@ -320,6 +328,8 @@ def screen_server(
     ]
     if cert is not None and cert.issuer:
         lines.append(t(lang, "server_cert_issuer", issuer=esc(cert.issuer)))
+    if cert is None or not cert.known:
+        lines += ["", t(lang, "server_cert_hint_refresh")]
     lines += ["", t(lang, "server_cert_hint")]
     return "\n".join(lines)
 

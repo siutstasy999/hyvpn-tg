@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.cert_service import (  # noqa: E402
     DEFAULT_ACME_DIR,
     DEFAULT_STATUS_PATH,
+    MISSING,
     CertInfo,
     find_cert_file,
     read_cert_file,
@@ -40,7 +41,8 @@ def main() -> int:
         info = CertInfo(
             domain=domain,
             source="file",
-            error=f"no certificate for {domain} under {acme_dir}",
+            error=f"not issued yet: no certificate for {domain} under {acme_dir}",
+            state=MISSING,
         )
     else:
         info = read_cert_file(domain, cert_file)

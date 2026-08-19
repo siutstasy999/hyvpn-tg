@@ -275,12 +275,37 @@ def test_expiring_certificate_is_flagged():
     run(scenario, cert=soon)
 
 
-def test_unknown_certificate_does_not_break_screens():
+def test_not_yet_issued_certificate_reads_as_pending_not_as_failure():
+    async def scenario(h: Harness):
+        await h.feed(callback_update("server"))
+        text = h.last()
+        assert "Ещё не выпущен" in text
+        assert "hyvpn cert" in text  # how to check it right now
+
+        h.reset()
+        await h.feed(callback_update("menu"))
+        assert "ещё не выпущен" in h.last()
+
+    run(scenario)
+
+
+def test_unreadable_certificate_is_reported_as_such():
+    broken = CertInfo(
+        domain="my-own.online",
+        error="unreadable: Permission denied",
+        state="unreadable",
+    )
+
     async def scenario(h: Harness):
         await h.feed(callback_update("server"))
         assert "Неизвестно" in h.last()
+        assert "Permission denied" in h.last()
 
-    run(scenario)
+        h.reset()
+        await h.feed(callback_update("menu"))
+        assert "не удалось прочитать" in h.last()
+
+    run(scenario, cert=broken)
 
 
 # --------------------------------------------------------------------------- #

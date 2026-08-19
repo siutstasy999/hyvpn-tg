@@ -107,7 +107,16 @@ TEXTS: dict[str, dict[str, str]] = {
         "cert_short_ok": "до {date} ({days} дн.)",
         "cert_short_soon": "⚠️ {days} дн. до истечения",
         "cert_short_expired": "🔴 истёк",
-        "cert_short_unknown": "неизвестно",
+        "cert_short_pending": "⏳ ещё не выпущен",
+        "cert_short_unknown": "не удалось прочитать",
+        "server_cert_pending": (
+            "⏳ Ещё не выпущен — Hysteria2 запросит его у Let's Encrypt при "
+            "первом подключении."
+        ),
+        "server_cert_hint_refresh": (
+            "<i>Данные обновляются раз в час. Чтобы проверить сейчас, "
+            "выполните на сервере:</i>\n<code>hyvpn cert</code>"
+        ),
         # help
         "help_title": "ℹ️ <b>Справка</b>",
         "help_commands": (
@@ -282,7 +291,16 @@ TEXTS: dict[str, dict[str, str]] = {
         "cert_short_ok": "until {date} ({days} d)",
         "cert_short_soon": "⚠️ {days} days left",
         "cert_short_expired": "🔴 expired",
-        "cert_short_unknown": "unknown",
+        "cert_short_pending": "⏳ not issued yet",
+        "cert_short_unknown": "could not be read",
+        "server_cert_pending": (
+            "⏳ Not issued yet — Hysteria2 will request it from Let's Encrypt "
+            "on the first connection."
+        ),
+        "server_cert_hint_refresh": (
+            "<i>The data refreshes hourly. To check right now, run on the "
+            "server:</i>\n<code>hyvpn cert</code>"
+        ),
         "help_title": "ℹ️ <b>Help</b>",
         "help_commands": (
             "Everything works with buttons, but commands exist too:\n\n"

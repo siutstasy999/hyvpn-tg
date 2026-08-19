@@ -48,6 +48,12 @@ ACTION=install
 FIRST_KEY_LABEL="${HYVPN_FIRST_KEY:-}"
 
 # discovered state
+PREV_DOMAIN=""
+PREV_EMAIL=""
+PREV_IDS=""
+PREV_LOCATION=""
+PREV_PORT=""
+PREV_LANG=""
 EXISTING_INSTALL=no
 KEEP_CERT=no
 STATS_SECRET=""
@@ -193,6 +199,119 @@ valid_token()  { [[ "$1" =~ ^[0-9]{5,}:[A-Za-z0-9_-]{20,}$ ]]; }
 # natural thing to type.
 valid_ids()    { [[ "${1//[[:space:]]/}" =~ ^[0-9]+(,[0-9]+)*$ ]]; }
 valid_port()   { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 65535 )); }
+
+# --------------------------------------------------------------------------- #
+# server location
+# --------------------------------------------------------------------------- #
+
+COUNTRY_CODE=""
+
+# Regional indicator symbols A..Z. Two of them side by side render as a flag,
+# which is far more portable than asking printf to emit \U escapes.
+REGIONAL=(🇦 🇧 🇨 🇩 🇪 🇫 🇬 🇭 🇮 🇯 🇰 🇱 🇲 🇳 🇴 🇵 🇶 🇷 🇸 🇹 🇺 🇻 🇼 🇽 🇾 🇿)
+
+flag_of() {
+    local code=${1^^} first second
+    [[ "$code" =~ ^[A-Z]{2}$ ]] || return 1
+    first=$(( $(printf '%d' "'${code:0:1}") - 65 ))
+    second=$(( $(printf '%d' "'${code:1:1}") - 65 ))
+    printf '%s%s' "${REGIONAL[first]}" "${REGIONAL[second]}"
+}
+
+country_name() {
+    case "${1^^}" in
+        AL) echo "Albania" ;;      AM) echo "Armenia" ;;
+        AR) echo "Argentina" ;;    AT) echo "Austria" ;;
+        AU) echo "Australia" ;;    AZ) echo "Azerbaijan" ;;
+        BA) echo "Bosnia" ;;       BE) echo "Belgium" ;;
+        BG) echo "Bulgaria" ;;     BR) echo "Brazil" ;;
+        BY) echo "Belarus" ;;      CA) echo "Canada" ;;
+        CH) echo "Switzerland" ;;  CL) echo "Chile" ;;
+        CN) echo "China" ;;        CO) echo "Colombia" ;;
+        CY) echo "Cyprus" ;;       CZ) echo "Czechia" ;;
+        DE) echo "Germany" ;;      DK) echo "Denmark" ;;
+        EE) echo "Estonia" ;;      EG) echo "Egypt" ;;
+        ES) echo "Spain" ;;        FI) echo "Finland" ;;
+        FR) echo "France" ;;       GB) echo "United Kingdom" ;;
+        GE) echo "Georgia" ;;      GR) echo "Greece" ;;
+        HK) echo "Hong Kong" ;;    HR) echo "Croatia" ;;
+        HU) echo "Hungary" ;;      ID) echo "Indonesia" ;;
+        IE) echo "Ireland" ;;      IL) echo "Israel" ;;
+        IN) echo "India" ;;        IS) echo "Iceland" ;;
+        IT) echo "Italy" ;;        JP) echo "Japan" ;;
+        KE) echo "Kenya" ;;        KR) echo "South Korea" ;;
+        KZ) echo "Kazakhstan" ;;   LT) echo "Lithuania" ;;
+        LU) echo "Luxembourg" ;;   LV) echo "Latvia" ;;
+        MA) echo "Morocco" ;;      MD) echo "Moldova" ;;
+        ME) echo "Montenegro" ;;   MK) echo "North Macedonia" ;;
+        MT) echo "Malta" ;;        MX) echo "Mexico" ;;
+        MY) echo "Malaysia" ;;     NG) echo "Nigeria" ;;
+        NL) echo "Netherlands" ;;  NO) echo "Norway" ;;
+        NZ) echo "New Zealand" ;;  PH) echo "Philippines" ;;
+        PL) echo "Poland" ;;       PT) echo "Portugal" ;;
+        QA) echo "Qatar" ;;        RO) echo "Romania" ;;
+        RS) echo "Serbia" ;;       RU) echo "Russia" ;;
+        SA) echo "Saudi Arabia" ;; SE) echo "Sweden" ;;
+        SG) echo "Singapore" ;;    SI) echo "Slovenia" ;;
+        SK) echo "Slovakia" ;;     TH) echo "Thailand" ;;
+        TR) echo "Turkey" ;;       TW) echo "Taiwan" ;;
+        UA) echo "Ukraine" ;;      AE) echo "UAE" ;;
+        US) echo "United States" ;; VN) echo "Vietnam" ;;
+        ZA) echo "South Africa" ;;
+        *)  echo "${1^^}" ;;
+    esac
+}
+
+# Where is this server? Asked anonymously, without an API key, from services
+# that answer with an ISO-3166 alpha-2 code. Nothing about the server is sent
+# beyond the request itself, and a failure is not an error: the domain is then
+# used as the profile name, exactly as before.
+detect_country() {
+    command -v curl >/dev/null || return 1
+    local code=""
+
+    code="$(curl -fsS --max-time 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null \
+        | sed -n 's/^loc=//p' | head -n1)"
+    if [[ ! "$code" =~ ^[A-Za-z]{2}$ ]]; then
+        code="$(curl -fsS --max-time 5 https://api.country.is 2>/dev/null \
+            | sed -n 's/.*"country"[^"]*"\([A-Za-z]\{2\}\)".*/\1/p')"
+    fi
+    if [[ ! "$code" =~ ^[A-Za-z]{2}$ ]]; then
+        code="$(curl -fsS --max-time 5 https://ipapi.co/country/ 2>/dev/null \
+            | tr -dc 'A-Za-z')"
+    fi
+
+    [[ "$code" =~ ^[A-Za-z]{2}$ ]] || return 1
+    COUNTRY_CODE="${code^^}"
+}
+
+suggest_location() {
+    local code=$1 name flag
+    name="$(country_name "$code")"
+    if flag="$(flag_of "$code")"; then
+        printf 'Hysteria2 %s %s' "$name" "$flag"
+    else
+        printf 'Hysteria2 %s' "$name"
+    fi
+}
+
+default_location() {
+    if [[ -n "$LOCATION" ]]; then
+        printf '%s' "$LOCATION"
+        return 0
+    fi
+    # A name the operator actually chose is kept. A name equal to the domain
+    # was only the old fallback, so offer the detected region instead.
+    if [[ -n "$PREV_LOCATION" && "$PREV_LOCATION" != "$DOMAIN" ]]; then
+        printf '%s' "$PREV_LOCATION"
+        return 0
+    fi
+    if ! dry_run && detect_country; then
+        suggest_location "$COUNTRY_CODE"
+        return 0
+    fi
+    printf '%s' "${PREV_LOCATION:-$DOMAIN}"
+}
 
 usage() {
     cat <<EOF
@@ -349,13 +468,19 @@ load_existing() {
     prev_lang="$(env_value "$CONF_DIR/.env.bot" DEFAULT_LANG)"
     prev_secret="$(env_value "$CONF_DIR/.env.hysteria" TRAFFIC_STATS_SECRET)"
 
-    DOMAIN="${DOMAIN:-$prev_domain}"
-    EMAIL="${EMAIL:-$prev_email}"
+    # Previous answers become the *defaults* of the questions rather than
+    # silently replacing them: otherwise a re-run on a configured server asks
+    # nothing at all and there is no way to change a setting without flags.
+    PREV_DOMAIN="$prev_domain"
+    PREV_EMAIL="$prev_email"
+    PREV_IDS="$prev_ids"
+    PREV_LOCATION="$prev_location"
+    PREV_PORT="$prev_port"
+    PREV_LANG="$prev_lang"
+
+    # The token is reused silently: showing it as a prompt default would print
+    # a live secret into the terminal on every upgrade.
     BOT_TOKEN="${BOT_TOKEN:-$prev_token}"
-    ADMIN_IDS="${ADMIN_IDS:-$prev_ids}"
-    LOCATION="${LOCATION:-$prev_location}"
-    [[ -n "$prev_port" ]] && PORT="${PORT:-$prev_port}"
-    [[ -n "$prev_lang" ]] && LANG_CHOICE="$prev_lang"
     STATS_SECRET="$prev_secret"
 
     ok "existing installation found — secrets, database and certificate are kept"
@@ -413,17 +538,27 @@ ask_everything() {
     if interactive; then
         printf '\n%sОтветьте на несколько вопросов. Enter — принять значение в скобках.%s\n' "$DIM" "$RESET"
     fi
-    ask DOMAIN "Домен сервера" "" valid_domain
-    ask EMAIL "E-mail для Let's Encrypt" "admin@$DOMAIN" valid_email
+    ask DOMAIN "Домен сервера" "$PREV_DOMAIN" valid_domain
+    ask EMAIL "E-mail для Let's Encrypt" "${PREV_EMAIL:-admin@$DOMAIN}" valid_email
     ask BOT_TOKEN "Токен Telegram-бота (@BotFather)" "" valid_token
-    if [[ -z "$ADMIN_IDS" ]] && interactive; then
+    if [[ -z "$ADMIN_IDS$PREV_IDS" ]] && interactive; then
         info "Свой Telegram ID можно узнать у @userinfobot"
     fi
-    ask ADMIN_IDS "Telegram ID администратора(ов), через запятую" "" valid_ids
+    ask ADMIN_IDS "Telegram ID администратора(ов), через запятую" "$PREV_IDS" valid_ids
     ADMIN_IDS="${ADMIN_IDS//[[:space:]]/}"
-    ask LOCATION "Название сервера для клиентов" "$DOMAIN"
-    ask PORT "UDP-порт Hysteria2" "443" valid_port
-    choose LANG_CHOICE "Язык бота по умолчанию:" "ru:Русский" "en:English"
+    local suggested
+    suggested="$(default_location)"
+    if [[ -n "$COUNTRY_CODE" ]]; then
+        ok "регион сервера определён: $COUNTRY_CODE"
+    fi
+    ask LOCATION "Название сервера для клиентов" "$suggested"
+    ask PORT "UDP-порт Hysteria2" "${PREV_PORT:-443}" valid_port
+    # The current language is listed first so that Enter keeps it.
+    if [[ "$PREV_LANG" == "en" ]]; then
+        choose LANG_CHOICE "Язык бота по умолчанию:" "en:English" "ru:Русский"
+    else
+        choose LANG_CHOICE "Язык бота по умолчанию:" "ru:Русский" "en:English"
+    fi
     if [[ "$SETUP_UFW" == "yes" ]] && interactive; then
         confirm "Настроить брандмауэр UFW (SSH + UDP/$PORT)?" y || SETUP_UFW=no
     fi
@@ -682,6 +817,29 @@ wait_for_health() {
     done
 }
 
+wait_for_certificate() {
+    if dry_run; then info "certificate wait: skipped (--dry-run)"; return 0; fi
+
+    # Hysteria2 asks Let's Encrypt for the certificate a few seconds after it
+    # starts. Waiting here means the summary — and the bot — show the real
+    # state instead of "not issued yet" for the next hour.
+    local attempt days
+    info "жду выпуск TLS-сертификата (до 60 с)…"
+    for attempt in $(seq 1 30); do
+        if days="$(cert_days_left "$DOMAIN")"; then
+            systemctl start hy-certwatch.service >/dev/null 2>&1 || true
+            ok "сертификат выпущен, действует ещё $days дн."
+            return 0
+        fi
+        sleep 2
+    done
+
+    systemctl start hy-certwatch.service >/dev/null 2>&1 || true
+    warn "сертификат пока не выпущен — Hysteria2 запросит его при первом подключении"
+    info "проверить позже: hyvpn cert  ·  журнал: hyvpn logs hysteria"
+    return 0
+}
+
 key_count() {
     local db="$DATA_DIR/hyvpn.sqlite3"
     [[ -f "$db" ]] || { echo 0; return; }
@@ -845,6 +1003,7 @@ main() {
     step "Запуск"
     start_services
     wait_for_health
+    wait_for_certificate
     create_first_key
 
     if dry_run; then

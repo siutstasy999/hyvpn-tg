@@ -22,6 +22,15 @@ DEFAULT_STATUS_PATH = "/var/lib/hyvpn/cert.json"
 _OPENSSL_DATE = re.compile(r"notAfter=(.+)")
 
 
+# Why the certificate state is what it is. Kept explicit instead of parsing
+# the error text: the bot words "not issued yet" and "cannot read it" very
+# differently, and only one of them is worth alarming the operator about.
+VALID = "valid"          # parsed, expiry known
+MISSING = "missing"      # ACME has not issued it yet
+UNREADABLE = "unreadable"  # exists, but this process may not read it
+ERROR = "error"          # found and readable, but could not be parsed
+
+
 @dataclass(frozen=True)
 class CertInfo:
     domain: str
@@ -29,10 +38,16 @@ class CertInfo:
     issuer: str = ""
     source: str = "unknown"
     error: str = ""
+    state: str = MISSING
 
     @property
     def known(self) -> bool:
         return self.not_after is not None
+
+    @property
+    def missing(self) -> bool:
+        """True while Hysteria2 has simply not obtained a certificate yet."""
+        return not self.known and self.state == MISSING
 
     @property
     def days_left(self) -> int | None:
@@ -130,18 +145,39 @@ def _parse_with_ssl_module(path: Path) -> tuple[datetime | None, str]:
 
 def read_cert_file(domain: str, path: Path) -> CertInfo:
     if not path.is_file():
-        return CertInfo(domain=domain, source="file", error="certificate not found")
+        return CertInfo(
+            domain=domain,
+            source="file",
+            error="certificate not issued yet",
+            state=MISSING,
+        )
     try:
         path.read_bytes()
     except OSError as exc:
-        return CertInfo(domain=domain, source="file", error=f"unreadable: {exc}")
+        return CertInfo(
+            domain=domain,
+            source="file",
+            error=f"unreadable: {exc}",
+            state=UNREADABLE,
+        )
 
     not_after, issuer = _parse_with_openssl(path)
     if not_after is None:
         not_after, issuer = _parse_with_ssl_module(path)
     if not_after is None:
-        return CertInfo(domain=domain, source="file", error="could not parse notAfter")
-    return CertInfo(domain=domain, not_after=not_after, issuer=issuer, source="file")
+        return CertInfo(
+            domain=domain,
+            source="file",
+            error="could not parse notAfter",
+            state=ERROR,
+        )
+    return CertInfo(
+        domain=domain,
+        not_after=not_after,
+        issuer=issuer,
+        source="file",
+        state=VALID,
+    )
 
 
 def read_status_file(path: str = DEFAULT_STATUS_PATH) -> CertInfo | None:
@@ -164,12 +200,14 @@ def read_status_file(path: str = DEFAULT_STATUS_PATH) -> CertInfo | None:
         if not_after is not None and not_after.tzinfo is None:
             not_after = not_after.replace(tzinfo=timezone.utc)
 
+    state = str(payload.get("state", "")) or (VALID if not_after else MISSING)
     return CertInfo(
         domain=str(payload.get("domain", "")),
         not_after=not_after,
         issuer=str(payload.get("issuer", "")),
         source="snapshot",
         error=str(payload.get("error", "")),
+        state=state,
     )
 
 
@@ -193,4 +231,6 @@ def get_cert_info(
 
     if snapshot is not None:
         return snapshot
-    return CertInfo(domain=domain, error="certificate not found")
+    return CertInfo(
+        domain=domain, error="certificate not issued yet", state=MISSING
+    )

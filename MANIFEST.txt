@@ -4,6 +4,7 @@
 .gitattributes
 .github/workflows/ci.yml
 .gitignore
+CHANGELOG.md
 LICENSE
 MANIFEST.txt
 README.md
@@ -43,6 +44,7 @@ tests/test_bot_ui.py
 tests/test_cert.py
 tests/test_core_auth.py
 tests/test_i18n.py
+tests/test_installer.py
 tests/test_keys.py
 tests/test_limits.py
 tests/test_migrations.py
