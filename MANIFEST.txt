@@ -47,6 +47,7 @@ tests/test_i18n.py
 tests/test_installer.py
 tests/test_keys.py
 tests/test_limits.py
+tests/test_migration.py
 tests/test_migrations.py
 tests/test_render.py
 tests/test_uri.py
