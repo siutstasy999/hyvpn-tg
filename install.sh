@@ -430,7 +430,11 @@ detect_os() {
             confirm "Continue anyway?" n || die "aborted"
             ;;
     esac
-    command -v systemctl >/dev/null || die "systemd is required"
+    # --dry-run is the mode for containers and CI, where there is no systemd:
+    # it does not start or enable anything anyway.
+    if ! dry_run && ! command -v systemctl >/dev/null; then
+        die "systemd is required"
+    fi
     [[ "$(uname -s)" == "Linux" ]] || die "Linux only"
 }
 

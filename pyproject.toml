@@ -22,4 +22,7 @@ ignore = ["UP017"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `pytest` (as opposed to `python -m pytest`) does not put the repo root on
+# sys.path, and the tests import `core`, `bot` and `hy_core_app` from there.
+pythonpath = ["."]
 filterwarnings = ["error::DeprecationWarning"]
