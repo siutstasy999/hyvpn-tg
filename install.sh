@@ -1170,13 +1170,17 @@ install_hysteria() {
     fi
     # The official unit is replaced by ours.
     systemctl disable --now hysteria-server.service >/dev/null 2>&1 || true
-    id -u "$HYSTERIA_USER" >/dev/null 2>&1 || useradd --system --no-create-home \
-        --shell /usr/sbin/nologin "$HYSTERIA_USER"
+    # The "hysteria" user is created in create_user_and_dirs(), so a --dry-run
+    # (where this function returns early) still owns /var/lib/hysteria.
 }
 
 create_user_and_dirs() {
     id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system \
         --home "$DATA_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    # The official installer creates this user itself, but --dry-run never
+    # runs it and still needs a real owner for /var/lib/hysteria.
+    id -u "$HYSTERIA_USER" >/dev/null 2>&1 || useradd --system --no-create-home \
+        --shell /usr/sbin/nologin "$HYSTERIA_USER"
     # The hysteria user needs to traverse the state directory shared with hyvpn.
     usermod -a -G "$SERVICE_USER" "$HYSTERIA_USER" >/dev/null 2>&1 || true
 
