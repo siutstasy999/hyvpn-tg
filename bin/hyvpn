@@ -54,9 +54,16 @@ ${BOLD}hyvpn${RESET} — Hysteria2 VPN management
   ${BOLD}hyvpn logs${RESET} [core|bot|hysteria|cert] [N]
   ${BOLD}hyvpn restart${RESET} [core|bot|hysteria|all]
   ${BOLD}hyvpn backup${RESET} [DIR]                consistent SQLite backup
+  ${BOLD}hyvpn export${RESET} [DIR]                move to another server: database, config,
+                                            certificate + the scp command
+  ${BOLD}hyvpn import${RESET} FILE                 apply such an archive on this server
   ${BOLD}hyvpn update${RESET}                      upgrade to the latest release
   ${BOLD}hyvpn uninstall${RESET}                   remove hyvpn
 EOF
+}
+
+installer_url() {
+    printf 'https://raw.githubusercontent.com/%s/%s/install.sh' "$REPO" "$REF"
 }
 
 unit_of() {
@@ -159,11 +166,30 @@ cmd_backup() {
     [[ -f "$DB" ]] || die "database not found: $DB"
     local dir=${1:-$DATA_DIR/backups}
     install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$dir"
-    local target="$dir/hyvpn-$(date +%Y%m%d-%H%M%S).sqlite3"
+    local target
+    target="$dir/hyvpn-$(date +%Y%m%d-%H%M%S).sqlite3"
     sqlite3 "$DB" ".backup '$target'"
     chown "$SERVICE_USER:$SERVICE_USER" "$target"
     chmod 0640 "$target"
     printf '%s✓%s %s\n' "$GREEN" "$RESET" "$target"
+}
+
+cmd_export() {
+    require_root
+    local -a args=(--export)
+    if [[ -n "${1:-}" ]]; then
+        args+=(--export-dir "$1")
+    fi
+    # The archive is built by install.sh: one implementation, and it also works
+    # on servers that still run an older hyvpn.
+    bash <(curl -fsSL "$(installer_url)") "${args[@]}"
+}
+
+cmd_import() {
+    require_root
+    local file=${1:?"usage: hyvpn import FILE.tar.gz"}
+    [[ -f "$file" ]] || die "file not found: $file"
+    bash <(curl -fsSL "$(installer_url)") --import-bundle "$file" --yes
 }
 
 cmd_update() {
@@ -188,6 +214,8 @@ main() {
         logs|log)   cmd_logs "$@" ;;
         restart)    cmd_restart "$@" ;;
         backup)     cmd_backup "$@" ;;
+        export)     cmd_export "$@" ;;
+        import)     cmd_import "$@" ;;
         update)     cmd_update ;;
         uninstall)  cmd_uninstall ;;
         cli)        cli "$@" ;;

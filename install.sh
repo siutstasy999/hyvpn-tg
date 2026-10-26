@@ -7,6 +7,10 @@
 # Ubuntu 22.04/24.04 and Debian 11/12. Re-running upgrades an existing install
 # without touching its secrets, database or TLS certificate.
 #
+# Moving to another server: `--export` here packs the database, the
+# configuration and the TLS certificate; on the new server the installer offers
+# to pull that archive over SSH, so existing keys keep working untouched.
+#
 set -Eeuo pipefail
 
 # --------------------------------------------------------------------------- #
@@ -30,6 +34,8 @@ UNITS=(hy-core.service hy-bot.service hysteria-server.service hy-certwatch.servi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo /tmp)"
 TMP_DIR=""
 SOURCE_DIR=""
+MIGRATE_DIR=""
+MIGRATE_ARCHIVE=""
 
 # answers
 DOMAIN="${HYVPN_DOMAIN:-}"
@@ -46,6 +52,20 @@ ASSUME_YES="${HYVPN_YES:-no}"
 DRY_RUN="${HYVPN_DRY_RUN:-no}"
 ACTION=install
 FIRST_KEY_LABEL="${HYVPN_FIRST_KEY:-}"
+
+# moving the database from another server
+IMPORT_MODE=""                       # none | remote | bundle
+IMPORT_HOST="${HYVPN_IMPORT:-}"
+IMPORT_USER="${HYVPN_IMPORT_USER:-}"
+IMPORT_KEY="${HYVPN_IMPORT_KEY:-}"
+IMPORT_PASSWORD="${HYVPN_IMPORT_PASSWORD:-}"
+IMPORT_BUNDLE="${HYVPN_IMPORT_BUNDLE:-}"
+IMPORT_SSH_PORT="${HYVPN_IMPORT_SSH_PORT:-22}"
+IMPORT_AUTH=""
+IMPORT_KEYS_ACTIVE=0
+IMPORT_KEYS_TOTAL=0
+IMPORT_HAS_CERT=no
+EXPORT_DIR="${HYVPN_EXPORT_DIR:-}"
 
 # discovered state
 PREV_DOMAIN=""
@@ -98,6 +118,10 @@ ART
 cleanup() {
     if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
         rm -rf "$TMP_DIR"
+    fi
+    # The extracted migration archive holds a copy of the key database.
+    if [[ -n "$MIGRATE_DIR" && -d "$MIGRATE_DIR" ]]; then
+        rm -rf "$MIGRATE_DIR"
     fi
     # The EXIT trap's status becomes the script's status, so never fail here.
     return 0
@@ -334,13 +358,25 @@ Options:
   -y, --yes              non-interactive: use flags/env and defaults only
   --dry-run              install files, venv and config, but do not touch
                          hysteria, systemd or the firewall (used by CI)
+  --import HOST          move the database from another server: pull it over
+                         SSH so existing keys and client links keep working
+  --import-user USER     SSH user on the old server (default: root)
+  --import-key PATH      private SSH key for that connection
+  --import-password      ask for the SSH password instead of using a key
+  --import-bundle FILE   import an archive made by --export (no SSH needed)
+  --import-ssh-port N    SSH port on the old server (default: 22)
+  --export               pack this server's database, configuration and TLS
+                         certificate for a move; prints the scp command
+  --export-dir DIR       where to put that archive (default: $DATA_DIR/backups)
   --uninstall            remove hyvpn from this server
   -h, --help             this text
 
 Every option can also be given as an environment variable:
   HYVPN_DOMAIN, HYVPN_EMAIL, HYVPN_BOT_TOKEN, HYVPN_ADMIN_IDS, HYVPN_LOCATION,
   HYVPN_PORT, HYVPN_LANG, HYVPN_FIRST_KEY, HYVPN_UFW, HYVPN_YES, HYVPN_REPO,
-  HYVPN_REF, HYVPN_DRY_RUN
+  HYVPN_REF, HYVPN_DRY_RUN, HYVPN_IMPORT, HYVPN_IMPORT_USER, HYVPN_IMPORT_KEY,
+  HYVPN_IMPORT_PASSWORD, HYVPN_IMPORT_BUNDLE, HYVPN_IMPORT_SSH_PORT,
+  HYVPN_EXPORT_DIR
 EOF
 }
 
@@ -356,6 +392,14 @@ parse_args() {
             --lang)       LANG_CHOICE=${2:?}; shift 2 ;;
             --first-key)  FIRST_KEY_LABEL=${2:?}; shift 2 ;;
             --no-ufw)     SETUP_UFW=no; shift ;;
+            --import)     IMPORT_HOST=${2:?}; shift 2 ;;
+            --import-user) IMPORT_USER=${2:?}; shift 2 ;;
+            --import-key) IMPORT_KEY=${2:?}; IMPORT_AUTH=key; shift 2 ;;
+            --import-password) IMPORT_AUTH=password; shift ;;
+            --import-bundle) IMPORT_BUNDLE=${2:?}; shift 2 ;;
+            --import-ssh-port) IMPORT_SSH_PORT=${2:?}; shift 2 ;;
+            --export)     ACTION='export'; shift ;;
+            --export-dir) EXPORT_DIR=${2:?}; shift 2 ;;
             --repo)       REPO=${2:?}; shift 2 ;;
             --ref)        REF=${2:?}; shift 2 ;;
             -y|--yes)     ASSUME_YES=yes; shift ;;
@@ -386,7 +430,11 @@ detect_os() {
             confirm "Continue anyway?" n || die "aborted"
             ;;
     esac
-    command -v systemctl >/dev/null || die "systemd is required"
+    # --dry-run is the mode for containers and CI, where there is no systemd:
+    # it does not start or enable anything anyway.
+    if ! dry_run && ! command -v systemctl >/dev/null; then
+        die "systemd is required"
+    fi
     [[ "$(uname -s)" == "Linux" ]] || die "Linux only"
 }
 
@@ -411,7 +459,11 @@ check_dns() {
     fi
     if [[ -z "$resolved" ]]; then
         warn "could not resolve $DOMAIN — make sure its DNS record exists"
-        confirm "Continue anyway?" n || die "aborted"
+        if [[ "$IMPORT_MODE" == "none" ]]; then
+            confirm "Continue anyway?" n || die "aborted"
+        else
+            info "перенос из архива: сертификат едет вместе с ним, DNS можно поправить и позже"
+        fi
         return 0
     fi
     if [[ -z "$PUBLIC_IP" ]]; then
@@ -423,7 +475,11 @@ check_dns() {
     else
         warn "$DOMAIN resolves to $resolved, but this server is $PUBLIC_IP"
         warn "Let's Encrypt will refuse to issue a certificate until DNS is fixed"
-        confirm "Continue anyway?" n || die "aborted"
+        if [[ "$IMPORT_MODE" == "none" ]]; then
+            confirm "Continue anyway?" n || die "aborted"
+        else
+            info "перенос из архива: сертификат едет вместе с ним, DNS можно поправить и позже"
+        fi
     fi
 }
 
@@ -531,6 +587,504 @@ check_certificate() {
 }
 
 # --------------------------------------------------------------------------- #
+# moving the database to another server
+# --------------------------------------------------------------------------- #
+#
+# The bundle is a tar.gz with the SQLite database, the three env files, the
+# ACME directory (so TLS does not have to be reissued) and a MANIFEST.
+#
+# It is built by the script printed by export_script_source(). The very same
+# text is piped to `ssh old-server bash -s`, so an old server needs nothing but
+# bash, tar and sqlite3 (or python3) — it does not have to run this version of
+# hyvpn, and nothing has to be installed there.
+
+ask_secret() {
+    # ask_secret VARNAME "question"
+    local __var=$1 question=$2 answer
+    if [[ -n "${!__var:-}" ]]; then
+        return 0
+    fi
+    if ! interactive; then
+        die "missing required value: $__var (no tty for questions)"
+    fi
+    printf '      %s: ' "$question" >"$TTY"
+    IFS= read -rs answer <"$TTY" || answer=""
+    printf '\n' >"$TTY"
+    if [[ -z "$answer" ]]; then
+        die "пустой пароль"
+    fi
+    printf -v "$__var" '%s' "$answer"
+}
+
+valid_host() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; }
+valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]; }
+valid_file() { [[ -f "$1" ]]; }
+
+prefer_imported() {
+    # prefer_imported VARNAME VALUE — keep the old default if VALUE is empty
+    local __var=$1 value=${2:-}
+    if [[ -n "$value" ]]; then
+        printf -v "$__var" '%s' "$value"
+    fi
+}
+
+public_ip() {
+    local ip=""
+    if command -v curl >/dev/null 2>&1; then
+        ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+    fi
+    if [[ -z "$ip" ]]; then
+        ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    fi
+    printf '%s' "${ip:-<IP-сервера>}"
+}
+
+apt_install_quiet() {
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null 2>&1; then
+        return 0
+    fi
+    apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
+}
+
+ensure_ssh_client() {
+    if ! command -v ssh >/dev/null 2>&1; then
+        info "устанавливаю openssh-client"
+        apt_install_quiet openssh-client || die "не удалось установить openssh-client"
+    fi
+}
+
+ensure_sshpass() {
+    if ! command -v sshpass >/dev/null 2>&1; then
+        info "устанавливаю sshpass (нужен для входа по паролю)"
+        apt_install_quiet sshpass || die "не удалось установить sshpass"
+    fi
+}
+
+ensure_sql_tools() {
+    if ! command -v sqlite3 >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+        info "устанавливаю sqlite3"
+        apt_install_quiet sqlite3 || die "не удалось установить sqlite3"
+    fi
+}
+
+export_script_source() {
+    cat <<'EXPORTER'
+#!/usr/bin/env bash
+# hyvpn migration bundle: database + configuration + TLS certificate.
+# The archive is written to stdout (or to the given file); everything else
+# goes to stderr, because stdout may be the tar stream itself.
+set -Eeuo pipefail
+
+DATA_DIR="${HYVPN_DATA_DIR:-/var/lib/hyvpn}"
+CONF_DIR="${HYVPN_CONF_DIR:-/etc/hyvpn}"
+ACME_DIR="${HYVPN_ACME_DIR:-/var/lib/hysteria/acme}"
+DB="$DATA_DIR/hyvpn.sqlite3"
+TARGET="${1:--}"
+
+log() { printf '%s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+if [[ ! -f "$DB" ]]; then
+    die "database not found: $DB (is hyvpn installed here?)"
+fi
+
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+
+db_copy() {
+    local src=$1
+    local dst=$2
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$src" ".backup '$dst'"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$src" "$dst" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(sys.argv[1])
+target = sqlite3.connect(sys.argv[2])
+source.backup(target)
+target.close()
+source.close()
+PY
+    else
+        die "need sqlite3 or python3 to copy the database"
+    fi
+}
+
+db_scalar() {
+    local src=$1
+    local sql=$2
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$src" "$sql"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$src" "$sql" <<'PY'
+import sqlite3
+import sys
+
+con = sqlite3.connect(sys.argv[1])
+row = con.execute(sys.argv[2]).fetchone()
+print(row[0] if row and row[0] is not None else "")
+PY
+    else
+        die "need sqlite3 or python3 to read the database"
+    fi
+}
+
+log "copying the database (online backup: services keep running)"
+db_copy "$DB" "$STAGE/hyvpn.sqlite3"
+
+install -d "$STAGE/env"
+for item in core:.env.core bot:.env.bot hysteria:.env.hysteria; do
+    name="${item%%:*}"
+    file="${item#*:}"
+    if [[ -f "$CONF_DIR/$file" ]]; then
+        cp -a "$CONF_DIR/$file" "$STAGE/env/$name.env"
+    else
+        log "warning: $CONF_DIR/$file not found"
+    fi
+done
+
+if [[ -d "$ACME_DIR" ]]; then
+    cp -a "$ACME_DIR" "$STAGE/acme"
+    log "including the TLS certificate from $ACME_DIR"
+fi
+
+keys_active="$(db_scalar "$STAGE/hyvpn.sqlite3" 'SELECT COUNT(*) FROM keys WHERE is_active = 1;')"
+keys_total="$(db_scalar "$STAGE/hyvpn.sqlite3" 'SELECT COUNT(*) FROM keys;')"
+
+env_of() {
+    sed -n "s/^$2=//p" "$STAGE/env/$1" 2>/dev/null | tail -n1
+}
+
+{
+    printf 'format=1\n'
+    printf 'created=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'source_host=%s\n' "$(hostname -f 2>/dev/null || hostname || echo unknown)"
+    printf 'domain=%s\n' "$(env_of core.env SERVER_DOMAIN)"
+    printf 'port=%s\n' "$(env_of core.env SERVER_PORT)"
+    printf 'location=%s\n' "$(env_of core.env LOCATION_NAME)"
+    printf 'keys_active=%s\n' "$keys_active"
+    printf 'keys_total=%s\n' "$keys_total"
+} > "$STAGE/MANIFEST"
+
+log "keys: $keys_active active, $keys_total total"
+
+members=(MANIFEST hyvpn.sqlite3 env)
+if [[ -d "$STAGE/acme" ]]; then
+    members+=(acme)
+fi
+
+if [[ "$TARGET" == "-" ]]; then
+    tar czf - -C "$STAGE" "${members[@]}"
+else
+    # A redirection instead of `tar -f`: some tar builds read "host:path" in -f
+    # as a remote archive, which breaks paths with a colon (Windows drive).
+    tar czf - -C "$STAGE" "${members[@]}" > "$TARGET.tmp"
+    chmod 0600 "$TARGET.tmp"
+    mv -f "$TARGET.tmp" "$TARGET"
+    log "archive: $TARGET ($(du -h "$TARGET" | cut -f1))"
+fi
+EXPORTER
+}
+
+do_export() {
+    banner
+    if [[ ! -f "$DATA_DIR/hyvpn.sqlite3" ]]; then
+        die "базы нет: $DATA_DIR/hyvpn.sqlite3 — hyvpn на этом сервере не установлен?"
+    fi
+    ensure_sql_tools
+
+    local dir="${EXPORT_DIR:-$DATA_DIR/backups}"
+    if ! install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$dir" 2>/dev/null; then
+        install -d -m 0750 "$dir"
+    fi
+    local archive
+    archive="$dir/hyvpn-migrate-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+    info "снимаю базу: сервисы не останавливаются, VPN продолжает работать"
+    export_script_source | bash -s -- "$archive"
+    if [[ ! -f "$archive" ]]; then
+        die "архив не создался"
+    fi
+
+    local size keys ip
+    size="$(du -h "$archive" | cut -f1)"
+    keys="$(tar -xzOf "$archive" MANIFEST | sed -n 's/^keys_total=//p')"
+    ip="$(public_ip)"
+
+    printf '\n%s  Архив для переноса готов%s\n\n' "$GREEN$BOLD" "$RESET"
+    printf '  файл ....... %s (%s)\n' "$archive" "$size"
+    printf '  ключей ..... %s\n' "${keys:-?}"
+    printf '\n  Скачать на свой компьютер (эта команда — на нём, не на сервере):\n\n'
+    printf '    scp root@%s:%s .\n\n' "$ip" "$archive"
+    printf '  Потом на новом сервере просто запустите установщик и ответьте «да»\n'
+    printf '  на вопрос про перенос базы. Или укажите файл сразу:\n\n'
+    printf '    bash install.sh --import-bundle %s\n\n' "$(basename "$archive")"
+    printf '  %sВ архиве пароли ключей и токен бота: не пересылайте его в мессенджерах\n' "$YELLOW"
+    printf '  и удалите после переноса.%s\n\n' "$RESET"
+}
+
+migrate_decide() {
+    if [[ -n "$IMPORT_BUNDLE" && -n "$IMPORT_HOST" ]]; then
+        die "выберите что-то одно: --import HOST или --import-bundle FILE"
+    fi
+    if [[ -n "$IMPORT_BUNDLE" ]]; then
+        IMPORT_MODE=bundle
+    elif [[ -n "$IMPORT_HOST" ]]; then
+        IMPORT_MODE=remote
+    elif interactive; then
+        printf '\n%sПеренос базы с прошлого сервера%s\n' "$BOLD" "$RESET"
+        printf '      Если перенести базу ключей, клиенты продолжат подключаться по тем же\n'
+        printf '      ссылкам: домен, порт и пароли останутся прежними.\n'
+        choose IMPORT_MODE "Перенести базу ключей?" \
+            "none:нет, начать с чистой базы" \
+            "remote:да, забрать по SSH с прошлого сервера" \
+            "bundle:да, у меня уже есть файл hyvpn-migrate-*.tar.gz"
+    fi
+    IMPORT_MODE="${IMPORT_MODE:-none}"
+}
+
+migrate_setup() {
+    if [[ "$IMPORT_MODE" == "none" ]]; then
+        return 0
+    fi
+    if [[ -z "$MIGRATE_DIR" ]]; then
+        MIGRATE_DIR="$(mktemp -d)"
+    fi
+    if [[ "$IMPORT_MODE" == "remote" ]]; then
+        migrate_ask_remote
+        migrate_pull_remote
+    else
+        migrate_ask_bundle
+        MIGRATE_ARCHIVE="$IMPORT_BUNDLE"
+    fi
+    migrate_load_bundle "$MIGRATE_ARCHIVE"
+    migrate_prefill
+}
+
+migrate_ask_remote() {
+    ask IMPORT_HOST "IP или hostname старого сервера" "" valid_host
+    ask IMPORT_USER "SSH-пользователь на старом сервере" "root" valid_user
+    if [[ -z "$IMPORT_AUTH" ]]; then
+        if [[ -n "$IMPORT_PASSWORD" ]]; then
+            IMPORT_AUTH=password
+        elif [[ -n "$IMPORT_KEY" ]]; then
+            IMPORT_AUTH=key
+        else
+            choose IMPORT_AUTH "Как войти на старый сервер?" \
+                "key:по SSH-ключу (как обычно)" \
+                "password:по паролю"
+        fi
+    fi
+    if [[ "$IMPORT_AUTH" == "password" ]]; then
+        ask_secret IMPORT_PASSWORD "Пароль SSH на старом сервере (ввод не виден)"
+    fi
+}
+
+migrate_ask_bundle() {
+    ask IMPORT_BUNDLE "Путь к архиву hyvpn-migrate-*.tar.gz" "" valid_file
+}
+
+migrate_pull_remote() {
+    ensure_ssh_client
+    if [[ "$IMPORT_AUTH" == "password" ]]; then
+        ensure_sshpass
+    fi
+
+    local -a transport=(
+        -T
+        -p "$IMPORT_SSH_PORT"
+        -o ConnectTimeout=15
+        -o ServerAliveInterval=15
+        -o StrictHostKeyChecking=accept-new
+    )
+    local -a auth=()
+    if [[ "$IMPORT_AUTH" == "password" ]]; then
+        auth=(
+            -o BatchMode=no
+            -o PreferredAuthentications=password
+            -o PubkeyAuthentication=no
+            -o NumberOfPasswordPrompts=1
+        )
+    else
+        auth=(-o BatchMode=yes -o PreferredAuthentications=publickey)
+        if [[ -n "$IMPORT_KEY" ]]; then
+            auth+=(-i "$IMPORT_KEY" -o IdentitiesOnly=yes)
+        fi
+    fi
+
+    MIGRATE_ARCHIVE="$MIGRATE_DIR/hyvpn-migrate.tar.gz"
+    info "забираю базу с $IMPORT_USER@$IMPORT_HOST (порт $IMPORT_SSH_PORT)…"
+
+    local -a remote=(ssh "${transport[@]}" "${auth[@]}" "$IMPORT_USER@$IMPORT_HOST" "bash -s")
+    local failure="не удалось забрать базу по SSH. Проверьте адрес, пользователя и способ входа.
+       Если до старого сервера нет SSH, сделайте архив вручную: на нём
+       «hyvpn export», затем здесь «--import-bundle ФАЙЛ»."
+
+    if [[ "$IMPORT_AUTH" == "password" ]]; then
+        if ! SSHPASS="$IMPORT_PASSWORD" sshpass -e "${remote[@]}" \
+            < <(export_script_source) >"$MIGRATE_ARCHIVE"; then
+            IMPORT_PASSWORD=""
+            die "$failure"
+        fi
+        IMPORT_PASSWORD=""
+    else
+        if ! "${remote[@]}" < <(export_script_source) >"$MIGRATE_ARCHIVE"; then
+            die "$failure"
+        fi
+    fi
+    ok "архив получен ($(du -h "$MIGRATE_ARCHIVE" | cut -f1))"
+}
+
+migrate_load_bundle() {
+    local archive=$1
+    if [[ ! -f "$archive" ]]; then
+        die "файл не найден: $archive"
+    fi
+    if [[ -z "$MIGRATE_DIR" ]]; then
+        MIGRATE_DIR="$(mktemp -d)"
+    fi
+    # Reading the archive from stdin: tar would treat "host:path" in -f as a
+    # remote archive, and some paths (a Windows drive) do contain a colon.
+    if ! tar -xzf - -C "$MIGRATE_DIR" --no-same-owner <"$archive" 2>/dev/null; then
+        die "это не архив hyvpn-migrate (tar не смог его распаковать): $archive"
+    fi
+    if [[ ! -f "$MIGRATE_DIR/hyvpn.sqlite3" ]]; then
+        die "в архиве нет базы hyvpn.sqlite3"
+    fi
+    if [[ ! -f "$MIGRATE_DIR/MANIFEST" ]]; then
+        die "в архиве нет MANIFEST"
+    fi
+    if ! head -c 16 "$MIGRATE_DIR/hyvpn.sqlite3" | grep -q 'SQLite format 3'; then
+        die "hyvpn.sqlite3 в архиве повреждён"
+    fi
+    ok "архив распакован: $(basename "$archive")"
+}
+
+migrate_prefill() {
+    local env_core="$MIGRATE_DIR/env/core.env"
+    local env_bot="$MIGRATE_DIR/env/bot.env"
+    local env_hys="$MIGRATE_DIR/env/hysteria.env"
+    local manifest="$MIGRATE_DIR/MANIFEST"
+
+    IMPORT_KEYS_ACTIVE="$(env_value "$manifest" keys_active)"
+    IMPORT_KEYS_TOTAL="$(env_value "$manifest" keys_total)"
+    IMPORT_KEYS_ACTIVE="${IMPORT_KEYS_ACTIVE:-0}"
+    IMPORT_KEYS_TOTAL="${IMPORT_KEYS_TOTAL:-0}"
+
+    local imported_domain imported_port imported_location imported_email
+    imported_domain="$(env_value "$manifest" domain)"
+    if [[ -z "$imported_domain" ]]; then
+        imported_domain="$(env_value "$env_core" SERVER_DOMAIN)"
+    fi
+    imported_port="$(env_value "$env_core" SERVER_PORT)"
+    imported_location="$(env_value "$env_core" LOCATION_NAME)"
+    imported_email="$(env_value "$env_hys" ACME_EMAIL)"
+
+    # Imported answers become the defaults of the questions, not the answers:
+    # the move may also be a rename, and the operator still decides.
+    prefer_imported PREV_DOMAIN "$imported_domain"
+    prefer_imported PREV_PORT "$imported_port"
+    prefer_imported PREV_LOCATION "$imported_location"
+    prefer_imported PREV_EMAIL "$imported_email"
+    prefer_imported PREV_IDS "$(env_value "$env_bot" ALLOWED_TG_IDS)"
+    prefer_imported PREV_LANG "$(env_value "$env_bot" DEFAULT_LANG)"
+    prefer_imported BOT_TOKEN "$(env_value "$env_bot" BOT_TOKEN)"
+
+    if [[ -n "$PREV_DOMAIN" ]]; then
+        ok "в архиве: $IMPORT_KEYS_ACTIVE ключей, домен $PREV_DOMAIN, порт ${PREV_PORT:-443}"
+    else
+        warn "в архиве не нашлись домен и порт — проверьте ответы ниже"
+    fi
+    if [[ -d "$MIGRATE_DIR/acme" ]]; then
+        IMPORT_HAS_CERT=yes
+    fi
+    info "ссылки клиентов не меняются, пока домен и порт остаются прежними"
+}
+
+cert_plan_text() {
+    if [[ "$KEEP_CERT" == "yes" ]]; then
+        printf 'существующий'
+    elif [[ "$IMPORT_HAS_CERT" == "yes" ]]; then
+        printf 'из архива'
+    else
+        printf 'получить через ACME'
+    fi
+}
+
+migrate_plan_text() {
+    if [[ "$IMPORT_MODE" == "none" ]]; then
+        printf 'новая'
+    else
+        printf 'перенести из архива: %s ключей' "$IMPORT_KEYS_TOTAL"
+    fi
+}
+
+migrate_apply() {
+    if [[ "$IMPORT_MODE" == "none" ]]; then
+        return 0
+    fi
+    if dry_run; then
+        info "database import: skipped (--dry-run)"
+        return 0
+    fi
+
+    local db="$DATA_DIR/hyvpn.sqlite3"
+    if [[ -f "$db" ]]; then
+        install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DATA_DIR/backups"
+        if command -v sqlite3 >/dev/null 2>&1; then
+            sqlite3 "$db" ".backup '$DATA_DIR/backups/pre-import-$(date +%Y%m%d-%H%M%S).sqlite3'" \
+                >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # A running hy-core keeps an open handle on the old file; swapping it under
+    # the process would leave it writing into a replaced database.
+    if systemctl is-active --quiet hy-core.service 2>/dev/null; then
+        systemctl stop hy-bot.service hy-core.service >/dev/null 2>&1 || true
+    fi
+
+    install -m 0640 -o "$SERVICE_USER" -g "$SERVICE_USER" \
+        "$MIGRATE_DIR/hyvpn.sqlite3" "$db.new"
+    mv -f "$db.new" "$db"
+    rm -f "$db-wal" "$db-shm"
+
+    # The certificate is valid for the domain, not for the address, so it moves
+    # with the archive and Let's Encrypt does not have to be reachable at once.
+    local bundle_domain restore_acme=no
+    bundle_domain="$(env_value "$MIGRATE_DIR/MANIFEST" domain)"
+    if [[ -d "$MIGRATE_DIR/acme" ]]; then
+        if [[ -z "$bundle_domain" || "$bundle_domain" == "$DOMAIN" ]]; then
+            restore_acme=yes
+        fi
+    fi
+    if [[ "$restore_acme" == "yes" ]]; then
+        rm -rf "$HYSTERIA_STATE_DIR/acme"
+        cp -a "$MIGRATE_DIR/acme" "$HYSTERIA_STATE_DIR/acme"
+        chown -R "$HYSTERIA_USER:$SERVICE_USER" "$HYSTERIA_STATE_DIR/acme"
+        chmod -R go-rwx "$HYSTERIA_STATE_DIR/acme"
+        ok "перенёс TLS-сертификат из архива — ждать Let's Encrypt не нужно"
+    fi
+
+    ok "база перенесена: $IMPORT_KEYS_TOTAL ключей (активных $IMPORT_KEYS_ACTIVE)"
+}
+
+migrate_verify() {
+    if [[ "$IMPORT_MODE" == "none" || "$DRY_RUN" == "yes" ]]; then
+        return 0
+    fi
+    local now
+    now="$(key_count)"
+    if [[ "$now" == "$IMPORT_KEYS_TOTAL" ]]; then
+        ok "ключей в базе: $now — как в архиве; ссылки клиентов не меняются"
+    else
+        warn "ключей в базе $now, а в архиве было $IMPORT_KEYS_TOTAL — проверьте: hyvpn key ls"
+    fi
+}
+
+# --------------------------------------------------------------------------- #
 # questions
 # --------------------------------------------------------------------------- #
 
@@ -562,7 +1116,7 @@ ask_everything() {
     if [[ "$SETUP_UFW" == "yes" ]] && interactive; then
         confirm "Настроить брандмауэр UFW (SSH + UDP/$PORT)?" y || SETUP_UFW=no
     fi
-    if [[ -z "$FIRST_KEY_LABEL" && "$EXISTING_INSTALL" == "no" ]]; then
+    if [[ -z "$FIRST_KEY_LABEL" && "$EXISTING_INSTALL" == "no" && "$IMPORT_MODE" == "none" ]]; then
         FIRST_KEY_LABEL="my-phone"
         if interactive; then
             FIRST_KEY_LABEL=""
@@ -582,7 +1136,8 @@ show_plan() {
       админы бота .......... $ADMIN_IDS
       язык бота ............ $LANG_CHOICE
       каталог .............. $INSTALL_DIR
-      сертификат ........... $([[ "$KEEP_CERT" == "yes" ]] && echo "существующий" || echo "получить через ACME")
+      сертификат ........... $(cert_plan_text)
+      база ................. $(migrate_plan_text)
       брандмауэр ........... $([[ "$SETUP_UFW" == "yes" ]] && echo "настроить UFW" || echo "не трогать")
 EOF
     confirm "Продолжить?" y || die "aborted"
@@ -615,13 +1170,17 @@ install_hysteria() {
     fi
     # The official unit is replaced by ours.
     systemctl disable --now hysteria-server.service >/dev/null 2>&1 || true
-    id -u "$HYSTERIA_USER" >/dev/null 2>&1 || useradd --system --no-create-home \
-        --shell /usr/sbin/nologin "$HYSTERIA_USER"
+    # The "hysteria" user is created in create_user_and_dirs(), so a --dry-run
+    # (where this function returns early) still owns /var/lib/hysteria.
 }
 
 create_user_and_dirs() {
     id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system \
         --home "$DATA_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    # The official installer creates this user itself, but --dry-run never
+    # runs it and still needs a real owner for /var/lib/hysteria.
+    id -u "$HYSTERIA_USER" >/dev/null 2>&1 || useradd --system --no-create-home \
+        --shell /usr/sbin/nologin "$HYSTERIA_USER"
     # The hysteria user needs to traverse the state directory shared with hyvpn.
     usermod -a -G "$SERVICE_USER" "$HYSTERIA_USER" >/dev/null 2>&1 || true
 
@@ -885,6 +1444,7 @@ $GREEN$BOLD  Готово!$RESET
   ${BOLD}Сертификат${RESET}  $cert_note
   ${BOLD}Бот${RESET}         ${BOT_USERNAME:+@$BOT_USERNAME }— напишите ему /start
   ${BOLD}Админы${RESET}      $ADMIN_IDS
+  ${BOLD}База${RESET}        $([[ "$IMPORT_MODE" == "none" ]] && echo "новая" || echo "перенесена: $IMPORT_KEYS_TOTAL ключей, ссылки клиентов прежние")
   ${BOLD}QR-коды${RESET}     $([[ "$QR_SUPPORT" == "yes" ]] && echo "включены" || echo "недоступны (не установился Pillow)")
 
   ${BOLD}Управление${RESET}
@@ -947,6 +1507,11 @@ main() {
     parse_args "$@"
     require_root
 
+    if [[ "$ACTION" == "export" ]]; then
+        do_export
+        return
+    fi
+
     if [[ "$ACTION" == "uninstall" ]]; then
         do_uninstall
         return
@@ -961,11 +1526,18 @@ main() {
     trap 'on_error $LINENO' ERR
 
     banner
+    migrate_decide
+    TOTAL_STEPS=11
+    if [[ "$IMPORT_MODE" != "none" ]]; then
+        TOTAL_STEPS=12
+    fi
+
     step "Проверка системы"
     detect_os
     load_existing
 
     step "Настройка"
+    migrate_setup
     ask_everything
     check_dns
     check_ports
@@ -993,6 +1565,11 @@ main() {
     step "Конфигурация"
     write_env_files
 
+    if [[ "$IMPORT_MODE" != "none" ]]; then
+        step "Перенос базы"
+        migrate_apply
+    fi
+
     step "Сервисы"
     install_units
     install_wrapper
@@ -1003,6 +1580,7 @@ main() {
     step "Запуск"
     start_services
     wait_for_health
+    migrate_verify
     wait_for_certificate
     create_first_key
 
