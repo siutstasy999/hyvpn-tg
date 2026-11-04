@@ -5,3 +5,6 @@ aiosqlite
 pydantic-settings
 python-dotenv
 qrcode[pil]
+# The runtime configuration is rendered and validated as YAML. uvicorn[standard]
+# pulls it in, but the masquerade subsystem depends on it directly.
+PyYAML

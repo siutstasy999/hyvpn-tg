@@ -334,6 +334,179 @@ def screen_server(
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# masquerade screens
+# --------------------------------------------------------------------------- #
+
+_MASQ_ICONS = {"healthy": "✅", "degraded": "⚠️", "unhealthy": "🔴", "unknown": "⚪️"}
+
+
+def _masq_icon(health: str) -> str:
+    return _MASQ_ICONS.get(str(health), "⚪️")
+
+
+def screen_masquerade(lang: str, status) -> str:
+    """Main masquerade screen shown from the server section."""
+    lines = [t(lang, "masq_title"), RULE]
+    lines.append(
+        t(
+            lang,
+            "masq_mode",
+            mode=esc(status.effective_mode),
+            configured=esc(status.configured_mode),
+        )
+    )
+    if status.upstream:
+        lines.append(t(lang, "masq_upstream", url=esc(status.upstream)))
+        if status.candidate_id:
+            lines.append(
+                t(
+                    lang,
+                    "masq_health",
+                    health=f"{_masq_icon(status.candidate_health)} {esc(status.candidate_health)}",
+                    latency=f"{status.last_latency_ms:.0f}",
+                )
+            )
+        else:
+            lines.append(t(lang, "masq_health_unknown"))
+    else:
+        lines.append(t(lang, "masq_no_upstream"))
+    lines.append(t(lang, "masq_last_check", ago=fmt_ago(lang, status.last_probe)))
+    lines.append(t(lang, "masq_cert", cert=cert_short(lang, status.certificate)))
+    lines.append(
+        t(
+            lang,
+            "masq_fallback",
+            state=t(
+                lang,
+                "masq_fallback_ok" if status.fallback_ready else "masq_fallback_missing",
+            ),
+        )
+    )
+    lines.append(
+        t(
+            lang,
+            "masq_candidates",
+            enabled=status.candidates_enabled,
+            total=status.candidates_total,
+        )
+    )
+    lines += ["", t(lang, "masq_hint"), t(lang, "masq_admin_note")]
+    return "\n".join(lines)
+
+
+def screen_masq_check(lang: str, report: dict) -> str:
+    lines = [
+        t(lang, "masq_check_title"),
+        RULE,
+        t(lang, "masq_check_ok" if report.get("ok") else "masq_check_bad"),
+    ]
+    for problem in report.get("problems", []):
+        lines.append(f"🔴 {esc(problem)}")
+    for warning in report.get("warnings", []):
+        lines.append(f"⚠️ {esc(warning)}")
+    for note in report.get("notes", [])[:12]:
+        lines.append(f"• {esc(note)}")
+    return "\n".join(lines)
+
+
+def screen_masq_candidates(lang: str, status) -> str:
+    lines = [
+        t(
+            lang,
+            "masq_candidates",
+            enabled=status.candidates_enabled,
+            total=status.candidates_total,
+        ),
+        RULE,
+    ]
+    if not status.evaluations:
+        lines.append(t(lang, "masq_test_empty"))
+    for evaluation in status.evaluations:
+        lines.append(
+            t(
+                lang,
+                "masq_test_line",
+                icon=_masq_icon(evaluation.health),
+                id=esc(evaluation.candidate_id),
+                health=esc(evaluation.health),
+                latency=f"{evaluation.mean_latency_ms:.0f}",
+                samples=evaluation.samples,
+            )
+        )
+        if evaluation.reasons:
+            lines.append(f"    <i>{esc('; '.join(evaluation.reasons[:2]))}</i>")
+    return "\n".join(lines)
+
+
+def screen_masq_plan(lang: str, plan) -> str:
+    lines = [t(lang, "masq_plan_title"), RULE]
+    if plan.blocked:
+        lines.append(t(lang, "masq_plan_blocked", reason=esc(plan.reason)))
+        return "\n".join(lines)
+    lines.append(
+        t(lang, "masq_plan_mode", before=esc(plan.previous_mode), after=esc(plan.mode))
+    )
+    if plan.candidate_id:
+        if plan.candidate_id == plan.previous_candidate:
+            lines.append(t(lang, "masq_plan_same", after=esc(plan.candidate_id)))
+        else:
+            lines.append(
+                t(
+                    lang,
+                    "masq_plan_upstream",
+                    before=esc(plan.previous_candidate or "—"),
+                    after=esc(plan.candidate_id),
+                )
+            )
+    lines.append(t(lang, "masq_plan_reason", reason=esc(plan.reason)))
+    if not plan.changed:
+        lines.append(t(lang, "masq_plan_nochange"))
+    return "\n".join(lines)
+
+
+def screen_masq_results(lang: str, results: list[dict]) -> str:
+    lines = [t(lang, "masq_results_title"), RULE]
+    if not results:
+        lines.append(t(lang, "masq_results_empty"))
+        return "\n".join(lines)
+    for entry in results:
+        result = entry.get("result") or {}
+        request = entry.get("request") or {}
+        action = esc(result.get("action") or request.get("kind") or "?")
+        when = fmt_dt(entry.get("finished_at"))
+        ok = bool(result.get("ok"))
+        lines.append(
+            t(
+                lang,
+                "masq_result_ok" if ok else "masq_result_fail",
+                action=action,
+                at=when,
+            )
+        )
+        if result.get("error"):
+            lines.append(t(lang, "masq_result_error", error=esc(result["error"])))
+    return "\n".join(lines)
+
+
+def screen_masq_modes(lang: str, current: str) -> str:
+    return "\n".join(
+        [
+            t(lang, "masq_modes_title"),
+            RULE,
+            t(lang, "masq_modes_prompt", mode=esc(current)),
+        ]
+    )
+
+
+def screen_masq_queued(lang: str, request_id: str, *, mode: str = "") -> str:
+    if mode:
+        return t(lang, "masq_mode_queued", mode=esc(mode)) + "\n\n" + t(
+            lang, "masq_queued", id=esc(request_id)
+        )
+    return t(lang, "masq_queued", id=esc(request_id))
+
+
 def screen_help(lang: str) -> str:
     return "\n".join(
         [
@@ -585,4 +758,69 @@ def kb_lang(lang: str) -> InlineKeyboardMarkup:
             )
         )
     builder.row(InlineKeyboardButton(text=t(lang, "btn_menu"), callback_data="menu"))
+    return builder.as_markup()
+
+
+def kb_server(lang: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text=t(lang, "btn_masquerade"), callback_data="masq")
+    )
+    builder.row(InlineKeyboardButton(text=t(lang, "btn_menu"), callback_data="menu"))
+    return builder.as_markup()
+
+
+def kb_masquerade(lang: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text=t(lang, "btn_masq_check"), callback_data="masq:check"),
+        InlineKeyboardButton(text=t(lang, "btn_masq_test"), callback_data="masq:test"),
+    )
+    builder.row(
+        InlineKeyboardButton(text=t(lang, "btn_masq_plan"), callback_data="masq:plan"),
+        InlineKeyboardButton(text=t(lang, "btn_masq_cands"), callback_data="masq:cands"),
+    )
+    builder.row(
+        InlineKeyboardButton(text=t(lang, "btn_masq_modes"), callback_data="masq:modes"),
+        InlineKeyboardButton(
+            text=t(lang, "btn_masq_results"), callback_data="masq:results"
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(text=t(lang, "btn_server"), callback_data="server"),
+        InlineKeyboardButton(text=t(lang, "btn_menu"), callback_data="menu"),
+    )
+    return builder.as_markup()
+
+
+def kb_masq_plan(lang: str, *, can_apply: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if can_apply:
+        builder.row(
+            InlineKeyboardButton(text=t(lang, "btn_masq_apply"), callback_data="masq:apply")
+        )
+    builder.row(
+        InlineKeyboardButton(text=t(lang, "btn_masq_check"), callback_data="masq:check"),
+        InlineKeyboardButton(text=t(lang, "btn_masquerade"), callback_data="masq"),
+    )
+    return builder.as_markup()
+
+
+def kb_masq_modes(lang: str, current: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for mode in ("auto", "file", "proxy", "none", "string"):
+        mark = "✅ " if mode == current else ""
+        builder.row(
+            InlineKeyboardButton(text=f"{mark}{mode}", callback_data=f"masq:set:{mode}")
+        )
+    builder.row(InlineKeyboardButton(text=t(lang, "btn_masquerade"), callback_data="masq"))
+    return builder.as_markup()
+
+
+def kb_masq_back(lang: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text=t(lang, "btn_masquerade"), callback_data="masq"),
+        InlineKeyboardButton(text=t(lang, "btn_menu"), callback_data="menu"),
+    )
     return builder.as_markup()

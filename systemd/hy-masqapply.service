@@ -1,0 +1,17 @@
+[Unit]
+Description=Apply masquerade changes requested from the Telegram bot
+Documentation=https://github.com/siutstasy999/hyvpn-tg/blob/main/docs/MASQUERADE.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Root on purpose: applies the queued request and restarts hysteria-server.
+# The request format is fixed, so this is not a general privilege escalation.
+User=root
+EnvironmentFile=/etc/hyvpn/.env.core
+WorkingDirectory=/opt/hyvpn
+ExecStart=/opt/hyvpn/.venv/bin/python /opt/hyvpn/bin/masq_apply.py
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

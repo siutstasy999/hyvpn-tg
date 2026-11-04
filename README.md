@@ -22,6 +22,8 @@ Ubuntu 22.04/24.04 и Debian 11/12.
 | `hy-core.service` | FastAPI: `POST /auth`, опрос `/traffic` и `/online`, лимиты, буфер в памяти, flush в SQLite |
 | `hy-bot.service` | Telegram-бот (aiogram 3): ключи, QR, статистика, лимиты, сертификат |
 | `hy-certwatch.timer` | Дважды в сутки записывает срок действия сертификата в JSON |
+| `hy-masqwatch.timer` | Раз в 15 минут проверяет masquerade-апстрим и при необходимости меняет его |
+| `hy-masqapply.path` | Применяет изменения маскарада, запрошенные из бота (root) |
 | `hyvpn` | CLI-обёртка в `/usr/local/bin` |
 
 Общая бизнес-логика — в `core/`, её используют и бот, и CLI, и hy-core.
@@ -320,6 +322,11 @@ ACME_DOMAIN=vpn.example.com
 ACME_EMAIL=admin@example.com
 ```
 
+Маскарад описывается отдельными переменными в `.env.core` / `.env.bot`
+(`MASQ_CONFIG_PATH`, `MASQ_STATE_DIR`, `MASQ_SITE_DIR`, `MASQ_FRAGMENT_PATH`,
+`MASQ_TEMPLATE`, `MASQ_BACKUP_DIR`, `HYSTERIA_BINARY`, `MASQ_SERVICE`) — установщик
+заполняет их сам, менять нужно только при переносе каталогов.
+
 `hysteria-server.yaml` — шаблон: systemd рендерит его в
 `/run/hyvpn/hysteria-server.yaml` с правами 0600, чтобы секрет не лежал в git.
 
@@ -328,6 +335,39 @@ ACME_EMAIL=admin@example.com
 ```bash
 hyvpn restart all
 ```
+
+---
+
+## Маскарад (что видит случайный посетитель)
+
+Hysteria2 отвечает обычным HTTP/3-запросам как веб-сервер. Что именно он
+показывает — задаёт секция `masquerade`, и она никак не связана с TLS/SNI:
+домен сертификата берётся из `ACME_DOMAIN`, ссылки клиентов — из
+`SERVER_DOMAIN`, а апстрим маскарада меняется отдельно и не требует новых
+ключей.
+
+По умолчанию установщик включает **локальный статический сайт** на вашем домене
+(`/var/lib/hyvpn/masquerade/site`): никаких чужих сайтов, никакой зависимости
+от внешней сети. Апстримы (режим `proxy`) добавляются только явно:
+
+```bash
+sudo hyvpn masquerade status              # режим, апстрим, здоровье, сертификат
+sudo hyvpn masquerade doctor              # read-only отчёт о среде
+sudo hyvpn masquerade candidates add https://vpn.example.com/ --id own-site
+sudo hyvpn masquerade candidates test     # реальные HTTPS-проверки
+sudo hyvpn masquerade optimize --dry-run  # что будет выбрано и почему
+sudo hyvpn masquerade optimize --apply    # применить после подтверждения
+sudo hyvpn masquerade set-mode file|proxy|none|string
+sudo hyvpn masquerade upgrade             # одна команда: осмотр → план → применение
+```
+
+Управление дублируется в боте: «Сервер» → «🕸 Маскарад» (проверка, тест
+кандидатов, оптимизация, применение). Бот работает под `hyvpn` и сам ничего не
+перезапускает: он ставит задачу, её выполняет root-юнит.
+
+Как это устроено, какие пороги у оценки и как откатывать — в
+[`docs/MASQUERADE.md`](docs/MASQUERADE.md). Там же разбор ECH и обфускации:
+они не включаются автоматически (obfs вообще лишает masquerade смысла).
 
 ---
 

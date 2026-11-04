@@ -1,0 +1,21 @@
+[Unit]
+Description=Check the Hysteria2 masquerade upstream and fail over if needed
+Documentation=https://github.com/siutstasy999/hyvpn-tg/blob/main/docs/MASQUERADE.md
+After=network-online.target hysteria-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root on purpose: a failover writes /etc/hyvpn/masquerade.fragment.yaml and
+# restarts hysteria-server.service. Nothing else on the host gets these rights.
+User=root
+EnvironmentFile=/etc/hyvpn/.env.core
+WorkingDirectory=/opt/hyvpn
+ExecStart=/opt/hyvpn/.venv/bin/python /opt/hyvpn/bin/masquerade_monitor.py
+# Probing several upstreams with retries takes a while; give it room, but
+# never let a hung cycle block the next one.
+TimeoutStartSec=240
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

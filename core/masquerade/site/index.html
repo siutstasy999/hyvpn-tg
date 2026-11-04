@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{DOMAIN}}</title>
+    <meta name="description" content="Personal notes and experiments hosted on {{DOMAIN}}.">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="/">
+          <span class="brand-mark" aria-hidden="true">{{INITIALS}}</span>
+          <span class="brand-name">{{DOMAIN}}</span>
+        </a>
+        <nav class="site-nav" aria-label="Main">
+          <a href="/" aria-current="page">Home</a>
+          <a href="#notes">Notes</a>
+          <a href="#about">About</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <h1>Notes from a small server</h1>
+        <p>
+          A quiet corner of the internet for configuration snippets, long-form
+          notes and the occasional experiment. Everything here is written by
+          hand and served from a single machine.
+        </p>
+      </section>
+
+      <section id="notes" class="notes">
+        <h2>Recent notes</h2>
+        <article class="card">
+          <h3>Keeping TLS certificates boring</h3>
+          <p>
+            Automation is only useful when it is observable. A certificate that
+            renews itself quietly is good; a certificate that renews itself and
+            says nothing about failures is a future outage.
+          </p>
+          <p class="meta"><time datetime="2026-10-12">12 October 2026</time> · 4 min read</p>
+        </article>
+        <article class="card">
+          <h3>Operational checklists beat clever scripts</h3>
+          <p>
+            A short list of things to verify before and after a change catches
+            far more incidents than a clever one-liner. It also survives the
+            person who wrote it.
+          </p>
+          <p class="meta"><time datetime="2026-09-28">28 September 2026</time> · 3 min read</p>
+        </article>
+        <article class="card">
+          <h3>Why the fallback page matters</h3>
+          <p>
+            Ports are scanned constantly. A machine that answers correctly to an
+            ordinary browser request looks like the many machines that do the
+            same, which is all a fallback page is trying to achieve.
+          </p>
+          <p class="meta"><time datetime="2026-09-03">3 September 2026</time> · 2 min read</p>
+        </article>
+      </section>
+
+      <section id="about" class="about">
+        <h2>About</h2>
+        <p>
+          This is a personal, non-commercial website. It runs on
+          <strong>{{DOMAIN}}</strong> and is served from the same host around the
+          clock. Nothing here is for sale, and no accounts are offered.
+        </p>
+        <p class="muted">
+          Static pages, no tracking, no third-party assets.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <p>&copy; {{YEAR}} {{DOMAIN}}</p>
+      </div>
+    </footer>
+  </body>
+</html>

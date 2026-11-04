@@ -1,9 +1,47 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .cert_service import DEFAULT_ACME_DIR, DEFAULT_STATUS_PATH
+from .masquerade.config import (
+    DEFAULT_BACKUP_DIR,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_FRAGMENT_PATH,
+    DEFAULT_HYSTERIA_BINARY,
+    DEFAULT_RUNTIME_CONFIG,
+    DEFAULT_SERVICE,
+    DEFAULT_SITE_DIR,
+    DEFAULT_STATE_DIR,
+    DEFAULT_TEMPLATE_PATH,
+    Paths,
+)
+
+
+def _masq_paths(
+    *,
+    config: str,
+    state_dir: str,
+    site_dir: str,
+    fragment: str,
+    runtime_config: str,
+    template: str,
+    backups: str,
+    hysteria_binary: str,
+    service: str,
+) -> Paths:
+    return Paths(
+        config=Path(config),
+        state_dir=Path(state_dir),
+        site_dir=Path(site_dir),
+        fragment=Path(fragment),
+        runtime_config=Path(runtime_config),
+        template=Path(template),
+        backups=Path(backups),
+        hysteria_binary=Path(hysteria_binary),
+        service=service,
+    )
 
 
 class CoreSettings(BaseSettings):
@@ -32,6 +70,19 @@ class CoreSettings(BaseSettings):
     acme_dir: str = Field(default=DEFAULT_ACME_DIR, alias="ACME_DIR")
     cert_status_path: str = Field(default=DEFAULT_STATUS_PATH, alias="CERT_STATUS_PATH")
 
+    # Hysteria2 masquerade subsystem (see docs/MASQUERADE.md). The defaults
+    # match install.sh; the aliases exist so an installation can move the
+    # managed files without touching the code.
+    masq_config_path: str = Field(default=DEFAULT_CONFIG_PATH, alias="MASQ_CONFIG_PATH")
+    masq_state_dir: str = Field(default=DEFAULT_STATE_DIR, alias="MASQ_STATE_DIR")
+    masq_site_dir: str = Field(default=DEFAULT_SITE_DIR, alias="MASQ_SITE_DIR")
+    masq_fragment_path: str = Field(default=DEFAULT_FRAGMENT_PATH, alias="MASQ_FRAGMENT_PATH")
+    masq_runtime_config: str = Field(default=DEFAULT_RUNTIME_CONFIG, alias="MASQ_RUNTIME_CONFIG")
+    masq_template: str = Field(default=DEFAULT_TEMPLATE_PATH, alias="MASQ_TEMPLATE")
+    masq_backup_dir: str = Field(default=DEFAULT_BACKUP_DIR, alias="MASQ_BACKUP_DIR")
+    hysteria_binary: str = Field(default=DEFAULT_HYSTERIA_BINARY, alias="HYSTERIA_BINARY")
+    masq_service: str = Field(default=DEFAULT_SERVICE, alias="MASQ_SERVICE")
+
     @field_validator("poll_interval_seconds", "flush_interval_seconds")
     @classmethod
     def positive(cls, value: int) -> int:
@@ -46,6 +97,20 @@ class CoreSettings(BaseSettings):
     @property
     def profile_name(self) -> str:
         return self.location_name or self.server_domain
+
+    @property
+    def masq_paths(self) -> Paths:
+        return _masq_paths(
+            config=self.masq_config_path,
+            state_dir=self.masq_state_dir,
+            site_dir=self.masq_site_dir,
+            fragment=self.masq_fragment_path,
+            runtime_config=self.masq_runtime_config,
+            template=self.masq_template,
+            backups=self.masq_backup_dir,
+            hysteria_binary=self.hysteria_binary,
+            service=self.masq_service,
+        )
 
 
 @lru_cache
@@ -81,6 +146,18 @@ class BotSettings(BaseSettings):
     acme_dir: str = Field(default=DEFAULT_ACME_DIR, alias="ACME_DIR")
     cert_status_path: str = Field(default=DEFAULT_STATUS_PATH, alias="CERT_STATUS_PATH")
 
+    # The bot only reads the masquerade configuration and state; applying a
+    # change is a queued request handled by a root unit.
+    masq_config_path: str = Field(default=DEFAULT_CONFIG_PATH, alias="MASQ_CONFIG_PATH")
+    masq_state_dir: str = Field(default=DEFAULT_STATE_DIR, alias="MASQ_STATE_DIR")
+    masq_site_dir: str = Field(default=DEFAULT_SITE_DIR, alias="MASQ_SITE_DIR")
+    masq_fragment_path: str = Field(default=DEFAULT_FRAGMENT_PATH, alias="MASQ_FRAGMENT_PATH")
+    masq_runtime_config: str = Field(default=DEFAULT_RUNTIME_CONFIG, alias="MASQ_RUNTIME_CONFIG")
+    masq_template: str = Field(default=DEFAULT_TEMPLATE_PATH, alias="MASQ_TEMPLATE")
+    masq_backup_dir: str = Field(default=DEFAULT_BACKUP_DIR, alias="MASQ_BACKUP_DIR")
+    hysteria_binary: str = Field(default=DEFAULT_HYSTERIA_BINARY, alias="HYSTERIA_BINARY")
+    masq_service: str = Field(default=DEFAULT_SERVICE, alias="MASQ_SERVICE")
+
     @property
     def allowed_ids(self) -> set[int]:
         result: set[int] = set()
@@ -103,6 +180,20 @@ class BotSettings(BaseSettings):
     @property
     def profile_name(self) -> str:
         return self.location_name or self.server_domain
+
+    @property
+    def masq_paths(self) -> Paths:
+        return _masq_paths(
+            config=self.masq_config_path,
+            state_dir=self.masq_state_dir,
+            site_dir=self.masq_site_dir,
+            fragment=self.masq_fragment_path,
+            runtime_config=self.masq_runtime_config,
+            template=self.masq_template,
+            backups=self.masq_backup_dir,
+            hysteria_binary=self.hysteria_binary,
+            service=self.masq_service,
+        )
 
 
 @lru_cache

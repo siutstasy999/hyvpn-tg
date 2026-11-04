@@ -13,12 +13,20 @@ StateDirectory=hysteria
 WorkingDirectory=/var/lib/hysteria
 EnvironmentFile=/etc/hyvpn/.env.hysteria
 Environment="HYSTERIA_LOG_LEVEL=info"
+# The masquerade block is injected into the template by ExecStartPre. The
+# renderer falls back to the last known-good copy if the managed fragment is
+# unreadable, so a bad upstream can never stop the VPN from starting.
+Environment="MASQUERADE_FILE=/etc/hyvpn/masquerade.fragment.yaml"
+Environment="MASQUERADE_LAST_GOOD=/etc/hyvpn/masquerade.fragment.last-good.yaml"
 RuntimeDirectory=hyvpn
 RuntimeDirectoryMode=0750
-ExecStartPre=/usr/bin/python3 /opt/hyvpn/bin/render_hysteria_config.py /opt/hyvpn/hysteria-server.yaml /run/hyvpn/hysteria-server.yaml
+ExecStartPre=/opt/hyvpn/.venv/bin/python /opt/hyvpn/bin/render_hysteria_config.py /opt/hyvpn/hysteria-server.yaml /run/hyvpn/hysteria-server.yaml
 ExecStart=/usr/local/bin/hysteria server -c /run/hyvpn/hysteria-server.yaml
 Restart=always
 RestartSec=3
+# A restart triggered by `hyvpn masquerade` must not look like a crash loop.
+StartLimitIntervalSec=300
+StartLimitBurst=20
 LimitNOFILE=1048576
 
 # Binding UDP/443 and tuning the tunnel as a non-root user needs these.

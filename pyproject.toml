@@ -26,3 +26,6 @@ testpaths = ["tests"]
 # sys.path, and the tests import `core`, `bot` and `hy_core_app` from there.
 pythonpath = ["."]
 filterwarnings = ["error::DeprecationWarning"]
+markers = [
+    "integration: needs a real server; run with HYVPN_HTTP3_TEST_DOMAIN set",
+]

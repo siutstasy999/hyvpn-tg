@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch the request directory of the masquerade subsystem
+
+[Path]
+# The bot (user hyvpn) can write here; the apply unit runs as root. This is
+# the privilege boundary: no sudoers rule, no command argument from Telegram.
+PathExistsGlob=/var/lib/hyvpn/masquerade/requests/*.json
+Unit=hy-masqapply.service
+
+[Install]
+WantedBy=paths.target

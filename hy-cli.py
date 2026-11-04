@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 
 from core.cert_service import get_cert_info
 from core.config import get_settings
@@ -20,6 +21,8 @@ from core.keys_service import (
     set_traffic_limit,
     used_bytes,
 )
+from core.masquerade import cli as masq_cli
+from core.masquerade.models import EFFECTIVE_MODES
 from core.stats_service import StatsService
 from core.uri import build_uri
 
@@ -106,7 +109,102 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("cert", help="TLS certificate expiry")
 
+    add_masquerade_parser(sub)
+
     return parser
+
+
+def add_masquerade_parser(sub) -> None:
+    masq = sub.add_parser(
+        "masquerade",
+        help="Hysteria2 masquerade: status, probes, upstream selection",
+        description=(
+            "Manage the Hysteria2 masquerade independently of TLS/SNI. "
+            "See docs/MASQUERADE.md."
+        ),
+    )
+    commands = masq.add_subparsers(dest="masq_command", required=True)
+
+    status = commands.add_parser("status", help="show the active mode and upstream")
+    status.add_argument("--json", action="store_true")
+
+    check = commands.add_parser(
+        "check", help="diagnose the current setup without changing anything"
+    )
+    check.add_argument("--json", action="store_true")
+
+    doctor = commands.add_parser(
+        "doctor", help="read-only report of the runtime environment"
+    )
+    doctor.add_argument("--json", action="store_true")
+
+    init = commands.add_parser(
+        "init", help="create masquerade.json and the local fallback site"
+    )
+    init.add_argument("--json", action="store_true")
+    init.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="write the fragment without restarting Hysteria (used by install.sh)",
+    )
+
+    upgrade = commands.add_parser(
+        "upgrade",
+        help="inspect, recommend and (after confirmation) apply a masquerade setup",
+    )
+    upgrade.add_argument("--dry-run", action="store_true", help="print the plan only")
+    upgrade.add_argument(
+        "--read-only", action="store_true", help="run the diagnostics only"
+    )
+    upgrade.add_argument("-y", "--yes", action="store_true", help="no questions")
+    upgrade.add_argument("--json", action="store_true")
+
+    optimize = commands.add_parser(
+        "optimize",
+        help="select the best upstream (dry-run unless --apply is given)",
+    )
+    mode = optimize.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="print the plan only")
+    mode.add_argument(
+        "--apply", action="store_true", help="apply after explicit confirmation"
+    )
+    optimize.add_argument("-y", "--yes", action="store_true", help="no questions")
+    optimize.add_argument("--json", action="store_true")
+
+    set_mode = commands.add_parser("set-mode", help="select the masquerade mode manually")
+    set_mode.add_argument("mode", choices=["auto", *EFFECTIVE_MODES])
+    set_mode.add_argument("--dry-run", action="store_true")
+    set_mode.add_argument("-y", "--yes", action="store_true")
+    set_mode.add_argument("--json", action="store_true")
+
+    candidates = commands.add_parser("candidates", help="manage upstream candidates")
+    cand = candidates.add_subparsers(dest="candidates_command", required=True)
+
+    cand_list = cand.add_parser("list", help="list candidates and their health")
+    cand_list.add_argument("--json", action="store_true")
+
+    cand_test = cand.add_parser("test", help="probe every enabled candidate now")
+    cand_test.add_argument("--json", action="store_true")
+
+    cand_add = cand.add_parser("add", help="add an administrator-approved upstream")
+    cand_add.add_argument("url")
+    cand_add.add_argument("--id", help="candidate id (default: derived from the host)")
+    cand_add.add_argument("--priority", type=int, default=0)
+    cand_add.add_argument("--description", default="")
+    cand_add.add_argument("--replace", action="store_true", help="overwrite an existing id")
+
+    cand_remove = cand.add_parser("remove", help="remove a candidate")
+    cand_remove.add_argument("id")
+
+    for name, text in (("enable", "enable a candidate"), ("disable", "disable a candidate")):
+        enable = cand.add_parser(name, help=text)
+        enable.add_argument("id")
+
+    apply_requests = commands.add_parser(
+        "apply-requests",
+        help="process requests queued by the bot (root worker, run by systemd)",
+    )
+    apply_requests.add_argument("--json", action="store_true")
 
 
 async def cmd_create(args):
@@ -289,6 +387,60 @@ async def cmd_stats(args):
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def masquerade_context(args) -> masq_cli.Context:
+    settings = get_settings()
+    return masq_cli.Context(
+        paths=settings.masq_paths,
+        domain=settings.server_domain,
+        server_port=settings.server_port,
+        acme_dir=settings.acme_dir,
+        cert_status_path=settings.cert_status_path,
+        json_output=bool(getattr(args, "json", False)),
+        assume_yes=bool(getattr(args, "yes", False)),
+        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+    )
+
+
+def run_masquerade(args) -> int:
+    ctx = masquerade_context(args)
+    command = args.masq_command
+    if command == "status":
+        return masq_cli.cmd_status(ctx)
+    if command == "check":
+        return masq_cli.cmd_check(ctx)
+    if command == "doctor":
+        return masq_cli.cmd_doctor(ctx)
+    if command == "init":
+        return masq_cli.cmd_init(ctx, args)
+    if command == "upgrade":
+        return masq_cli.cmd_upgrade(ctx, args)
+    if command == "optimize":
+        return masq_cli.cmd_optimize(ctx, args)
+    if command == "set-mode":
+        return masq_cli.cmd_set_mode(ctx, args)
+    if command == "apply-requests":
+        return masq_cli.cmd_apply_requests(ctx)
+    if command == "candidates":
+        sub = args.candidates_command
+        if sub == "list":
+            return masq_cli.cmd_candidates_list(ctx)
+        if sub == "test":
+            return masq_cli.cmd_candidates_test(ctx)
+        if sub == "add":
+            return masq_cli.cmd_candidates_add(ctx, args)
+        if sub == "remove":
+            return masq_cli.cmd_candidates_remove(ctx, args)
+        if sub == "enable":
+            return masq_cli.cmd_candidates_enable(ctx, args, True)
+        if sub == "disable":
+            return masq_cli.cmd_candidates_enable(ctx, args, False)
+    raise SystemExit(f"unknown masquerade command: {command}")
+
+
+async def cmd_masquerade(args):
+    raise SystemExit(run_masquerade(args))
+
+
 async def cmd_cert(_args):
     settings = get_settings()
     info = get_cert_info(
@@ -313,6 +465,7 @@ HANDLERS = {
     "list-keys": cmd_list,
     "stats": cmd_stats,
     "cert": cmd_cert,
+    "masquerade": cmd_masquerade,
 }
 
 

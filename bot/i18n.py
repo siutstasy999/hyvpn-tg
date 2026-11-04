@@ -126,6 +126,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "🔑 <code>/keys</code> — список ключей\n"
             "📊 <code>/stats</code> — статистика трафика\n"
             "🖥 <code>/server</code> — состояние сервера и сертификата\n"
+            "🕸 <code>/masq</code> — маскарад: режим, апстрим, проверки\n"
             "🌐 <code>/lang</code> — сменить язык\n"
             "🆔 <code>/id</code> — ваш Telegram ID"
         ),
@@ -206,6 +207,71 @@ TEXTS: dict[str, dict[str, str]] = {
             "<code>sudo systemctl restart hy-bot</code>"
         ),
         "qr_caption": "📱 <b>{label}</b>\nОтсканируйте QR-код в клиенте Hysteria2.",
+        # masquerade
+        "btn_masquerade": "🕸 Маскарад",
+        "masq_title": "🕸 <b>Маскарад Hysteria2</b>",
+        "masq_mode": "🎭 <b>Режим:</b> {mode} <i>(настройка: {configured})</i>",
+        "masq_upstream": "🔗 <b>Апстрим:</b> <code>{url}</code>",
+        "masq_no_upstream": (
+            "🔗 <b>Апстрим:</b> <i>нет — отдаётся локальный сайт</i>"
+        ),
+        "masq_health": "🩺 <b>Здоровье:</b> {health} · {latency} мс",
+        "masq_health_unknown": "🩺 <b>Здоровье:</b> <i>ещё не проверялся</i>",
+        "masq_last_check": "🕒 <b>Последняя проверка:</b> {ago}",
+        "masq_cert": "📜 <b>Сертификат:</b> {cert}",
+        "masq_fallback": "🏠 <b>Локальный fallback:</b> {state}",
+        "masq_fallback_ok": "готов",
+        "masq_fallback_missing": "не создан — нужен `hyvpn masquerade init`",
+        "masq_candidates": "📋 <b>Кандидаты:</b> {enabled} из {total} включены",
+        "masq_hint": (
+            "<i>Изменения применяет служебный процесс от root, бот только "
+            "ставит задачу.</i>"
+        ),
+        "masq_admin_note": (
+            "<i>Управление доступно только администраторам из ALLOWED_TG_IDS.</i>"
+        ),
+        "btn_masq_check": "🔄 Проверить",
+        "btn_masq_test": "🧪 Тест кандидатов",
+        "btn_masq_plan": "⚙️ Оптимизировать",
+        "btn_masq_apply": "✅ Применить",
+        "btn_masq_cands": "📋 Кандидаты",
+        "btn_masq_results": "📜 Результаты",
+        "btn_masq_modes": "🎭 Режим",
+        "masq_check_title": "🕸 <b>Проверка маскарада</b>",
+        "masq_check_ok": "✅ Проблем не найдено",
+        "masq_check_bad": "⚠️ Найдены проблемы",
+        "masq_plan_title": "🕸 <b>Предлагаемая конфигурация</b>",
+        "masq_plan_mode": "🎭 Режим: {before} → <b>{after}</b>",
+        "masq_plan_upstream": "🔗 Апстрим: {before} → <b>{after}</b>",
+        "masq_plan_same": "🔗 Апстрим: <b>{after}</b> (без изменений)",
+        "masq_plan_reason": "💬 <i>{reason}</i>",
+        "masq_plan_nochange": "✅ Изменений не требуется",
+        "masq_plan_blocked": "⚠️ Применение заблокировано: <i>{reason}</i>",
+        "masq_queued": (
+            "⏳ Задача поставлена в очередь (id <code>{id}</code>). "
+            "Применение занимает до минуты."
+        ),
+        "masq_results_title": "🕸 <b>Последние применения</b>",
+        "masq_results_empty": "<i>Пока нечего показывать.</i>",
+        "masq_result_ok": "✅ <b>{action}</b> · {at}",
+        "masq_result_fail": "🔴 <b>{action}</b> · {at}",
+        "masq_result_error": "ошибка: <i>{error}</i>",
+        "masq_modes_title": "🎭 <b>Режим маскарада</b>",
+        "masq_modes_prompt": (
+            "Текущий режим: <b>{mode}</b>. Новый режим применится сразу после "
+            "выбора — служебный процесс перезапустит Hysteria только при "
+            "реальном изменении конфигурации."
+        ),
+        "masq_mode_queued": "🎭 Режим <b>{mode}</b> поставлен в очередь.",
+        "masq_test_title": "🕸 <b>Проверка кандидатов</b>",
+        "masq_test_line": (
+            "{icon} <b>{id}</b> — {health}, {latency} мс, проб: {samples}"
+        ),
+        "masq_test_empty": "<i>Нет включённых кандидатов — отдаётся локальный сайт.</i>",
+        "masq_test_failed": "🔴 <b>{id}</b> — {error}",
+        "toast_masq_running": "Проверяю, это займёт несколько секунд…",
+        "toast_masq_queued": "Задача в очереди",
+        "toast_masq_failed": "Не удалось выполнить проверку",
     },
     "en": {
         "units": "B,KB,MB,GB,TB,PB",
@@ -309,6 +375,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "🔑 <code>/keys</code> — key list\n"
             "📊 <code>/stats</code> — traffic statistics\n"
             "🖥 <code>/server</code> — server and certificate state\n"
+            "🕸 <code>/masq</code> — masquerade: mode, upstream, checks\n"
             "🌐 <code>/lang</code> — switch language\n"
             "🆔 <code>/id</code> — your Telegram ID"
         ),
@@ -386,6 +453,64 @@ TEXTS: dict[str, dict[str, str]] = {
             "<code>sudo systemctl restart hy-bot</code>"
         ),
         "qr_caption": "📱 <b>{label}</b>\nScan the QR code in a Hysteria2 client.",
+        "btn_masquerade": "🕸 Masquerade",
+        "masq_title": "🕸 <b>Hysteria2 masquerade</b>",
+        "masq_mode": "🎭 <b>Mode:</b> {mode} <i>(configured: {configured})</i>",
+        "masq_upstream": "🔗 <b>Upstream:</b> <code>{url}</code>",
+        "masq_no_upstream": "🔗 <b>Upstream:</b> <i>none — the local site is served</i>",
+        "masq_health": "🩺 <b>Health:</b> {health} · {latency} ms",
+        "masq_health_unknown": "🩺 <b>Health:</b> <i>not probed yet</i>",
+        "masq_last_check": "🕒 <b>Last check:</b> {ago}",
+        "masq_cert": "📜 <b>Certificate:</b> {cert}",
+        "masq_fallback": "🏠 <b>Local fallback:</b> {state}",
+        "masq_fallback_ok": "ready",
+        "masq_fallback_missing": "missing — run `hyvpn masquerade init`",
+        "masq_candidates": "📋 <b>Candidates:</b> {enabled} of {total} enabled",
+        "masq_hint": (
+            "<i>A root worker applies changes; the bot only queues the request.</i>"
+        ),
+        "masq_admin_note": (
+            "<i>Only administrators in ALLOWED_TG_IDS can manage this.</i>"
+        ),
+        "btn_masq_check": "🔄 Check",
+        "btn_masq_test": "🧪 Test candidates",
+        "btn_masq_plan": "⚙️ Optimize",
+        "btn_masq_apply": "✅ Apply",
+        "btn_masq_cands": "📋 Candidates",
+        "btn_masq_results": "📜 Results",
+        "btn_masq_modes": "🎭 Mode",
+        "masq_check_title": "🕸 <b>Masquerade check</b>",
+        "masq_check_ok": "✅ No problems found",
+        "masq_check_bad": "⚠️ Problems found",
+        "masq_plan_title": "🕸 <b>Proposed configuration</b>",
+        "masq_plan_mode": "🎭 Mode: {before} → <b>{after}</b>",
+        "masq_plan_upstream": "🔗 Upstream: {before} → <b>{after}</b>",
+        "masq_plan_same": "🔗 Upstream: <b>{after}</b> (unchanged)",
+        "masq_plan_reason": "💬 <i>{reason}</i>",
+        "masq_plan_nochange": "✅ No change needed",
+        "masq_plan_blocked": "⚠️ Applying is blocked: <i>{reason}</i>",
+        "masq_queued": (
+            "⏳ Queued (id <code>{id}</code>). Applying takes up to a minute."
+        ),
+        "masq_results_title": "🕸 <b>Recent deployments</b>",
+        "masq_results_empty": "<i>Nothing to show yet.</i>",
+        "masq_result_ok": "✅ <b>{action}</b> · {at}",
+        "masq_result_fail": "🔴 <b>{action}</b> · {at}",
+        "masq_result_error": "error: <i>{error}</i>",
+        "masq_modes_title": "🎭 <b>Masquerade mode</b>",
+        "masq_modes_prompt": (
+            "Current mode: <b>{mode}</b>. Picking another mode applies it right "
+            "away — the root worker restarts Hysteria only when the effective "
+            "configuration actually changes."
+        ),
+        "masq_mode_queued": "🎭 Mode <b>{mode}</b> queued.",
+        "masq_test_title": "🕸 <b>Candidate probes</b>",
+        "masq_test_line": "{icon} <b>{id}</b> — {health}, {latency} ms, {samples} probe(s)",
+        "masq_test_empty": "<i>No enabled candidates — the local site is served.</i>",
+        "masq_test_failed": "🔴 <b>{id}</b> — {error}",
+        "toast_masq_running": "Probing, this takes a few seconds…",
+        "toast_masq_queued": "Queued",
+        "toast_masq_failed": "The check could not be completed",
     },
 }
 
@@ -397,6 +522,7 @@ COMMAND_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "keys": "🔑 Список ключей",
         "stats": "📊 Статистика трафика",
         "server": "🖥 Сервер и сертификат",
+        "masq": "🕸 Маскарад и апстрим",
         "lang": "🌐 Сменить язык",
         "help": "ℹ️ Справка",
         "id": "🆔 Мой Telegram ID",
@@ -407,6 +533,7 @@ COMMAND_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "keys": "🔑 Key list",
         "stats": "📊 Traffic statistics",
         "server": "🖥 Server and certificate",
+        "masq": "🕸 Masquerade and upstream",
         "lang": "🌐 Switch language",
         "help": "ℹ️ Help",
         "id": "🆔 My Telegram ID",
