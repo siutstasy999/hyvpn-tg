@@ -48,3 +48,32 @@ def test_clean_name():
     assert clean_name("a" + chr(0) + "b") == "a b"
     assert clean_name(None) == ""
     assert len(clean_name("x" * 200)) == 64
+
+
+def test_client_links_are_independent_of_the_masquerade_upstream(tmp_path):
+    """Masquerade is server-side only: a new upstream must not change any URI.
+
+    This is the regression guard for the whole subsystem: the admin can point
+    masquerade at another site (or disable it) without reissuing a single key.
+    """
+    from core.masquerade.config import MasqConfig, Paths, write_config
+    from core.masquerade.models import Candidate
+    from core.masquerade.render import render_fragment
+
+    before = build_uri("pw", "my-own.online", 443, "Finland")
+
+    paths = Paths(config=tmp_path / "masquerade.json")
+    config = MasqConfig(
+        mode="auto",
+        candidates=[Candidate(id="origin", url="https://origin.example/")],
+    )
+    write_config(paths, config)
+    fragment = render_fragment(
+        "proxy", config, upstream_url="https://origin.example/"
+    )
+    assert "origin.example" in fragment
+
+    after = build_uri("pw", "my-own.online", 443, "Finland")
+    assert after == before
+    assert "origin.example" not in after
+    assert "sni=my-own.online" in after

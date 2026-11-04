@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodic Hysteria2 masquerade health check
+
+[Timer]
+# Three minutes after boot the VPN is already up; from then on a cycle every
+# 15 minutes is frequent enough to notice an outage and quiet enough not to
+# hammer an upstream.
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=hy-masqwatch.service
+
+[Install]
+WantedBy=timers.target

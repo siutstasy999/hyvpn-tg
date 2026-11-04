@@ -19,5 +19,8 @@ trafficStats:
   listen: 127.0.0.1:9999
   secret: ${TRAFFIC_STATS_SECRET}
 
-# No masquerade is required by the specification.
-# If you want HTTP/3 masquerading, add a configured masquerade section.
+# Masquerade is managed by `hyvpn masquerade`, never edited here: the block is
+# substituted from /etc/hyvpn/masquerade.fragment.yaml at start-up. With an
+# empty fragment there is no masquerade section at all, and Hysteria2 answers
+# 404 to unauthenticated HTTP requests. See docs/MASQUERADE.md.
+${MASQUERADE_YAML}

@@ -15,6 +15,11 @@ from core.cert_service import CertInfo, get_cert_info
 from core.config import BotSettings
 from core.db import connect, fetchall, fetchone
 from core.hysteria_client import HysteriaStatsClient, TrafficDelta
+from core.masquerade import requests as masq_requests
+from core.masquerade.engine import MasqueradeEngine
+from core.masquerade.engine import Status as MasqStatus
+from core.masquerade.models import Evaluation
+from core.masquerade.selector import Plan
 from core.prefs import get_lang, set_lang
 
 from .i18n import normalize_lang
@@ -103,6 +108,81 @@ class CertWatcher:
                 self._cached = CertInfo(domain=self.domain, error=str(exc))
             self._fetched_at = time.monotonic()
             return self._cached
+
+
+class MasqWatcher:
+    """Read-only view of the Hysteria2 masquerade for the bot.
+
+    The bot runs as ``hyvpn`` and must not be able to write ``/etc/hyvpn`` or
+    restart a unit. Reading status, probing candidates and computing a
+    proposal all happen in a worker thread (they perform blocking DNS/TLS
+    I/O); applying a proposal is queued and executed by a root systemd unit.
+
+    Every caller of this class has already passed ``WhitelistMiddleware``, so
+    "administrator" here means an ID listed in ``ALLOWED_TG_IDS``. VPN users
+    never talk to this bot at all.
+    """
+
+    def __init__(self, settings: BotSettings, ttl_seconds: int = 60):
+        self.settings = settings
+        self.paths = settings.masq_paths
+        self.domain = settings.server_domain
+        self.ttl = ttl_seconds
+        self._cached: MasqStatus | None = None
+        self._fetched_at = 0.0
+        self._lock = asyncio.Lock()
+
+    def _engine(self) -> MasqueradeEngine:
+        return MasqueradeEngine(
+            self.paths,
+            domain=self.settings.server_domain,
+            server_port=self.settings.server_port,
+            acme_dir=self.settings.acme_dir,
+            cert_status_path=self.settings.cert_status_path,
+        )
+
+    async def status(self, force: bool = False) -> MasqStatus:
+        async with self._lock:
+            fresh = time.monotonic() - self._fetched_at < self.ttl
+            if self._cached is not None and fresh and not force:
+                return self._cached
+            self._cached = await asyncio.to_thread(self._engine().status)
+            self._fetched_at = time.monotonic()
+            return self._cached
+
+    async def check(self) -> dict:
+        return await asyncio.to_thread(self._engine().check)
+
+    async def test_candidates(self) -> list[Evaluation]:
+        def run() -> list[Evaluation]:
+            engine = self._engine()
+            state = engine.load_state()
+            engine.probe_all(state)
+            evaluations = engine.evaluate(state)
+            engine.save_state(state)
+            return list(evaluations.values())
+
+        return await asyncio.to_thread(run)
+
+    async def plan(self) -> Plan:
+        plan, _evaluations, _state = await asyncio.to_thread(
+            self._engine().plan, record_decision_state=False
+        )
+        return plan
+
+    async def submit(
+        self, kind: str, payload: dict | None = None, requested_by: int | None = None
+    ) -> str:
+        return await asyncio.to_thread(
+            masq_requests.submit,
+            self.paths,
+            kind,
+            payload=payload,
+            requested_by=requested_by,
+        )
+
+    async def results(self, limit: int = 3) -> list[dict]:
+        return await asyncio.to_thread(masq_requests.read_results, self.paths, limit)
 
 
 class LangStore:

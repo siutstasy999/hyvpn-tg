@@ -29,7 +29,8 @@ CERT_STATUS_PATH="$DATA_DIR/cert.json"
 SERVICE_USER=hyvpn
 HYSTERIA_USER=hysteria
 WRAPPER=/usr/local/bin/hyvpn
-UNITS=(hy-core.service hy-bot.service hysteria-server.service hy-certwatch.service hy-certwatch.timer)
+UNITS=(hy-core.service hy-bot.service hysteria-server.service hy-certwatch.service hy-certwatch.timer
+       hy-masqwatch.service hy-masqwatch.timer hy-masqapply.service hy-masqapply.path)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo /tmp)"
 TMP_DIR=""
@@ -48,6 +49,7 @@ LOCATION="${HYVPN_LOCATION:-}"
 PORT="${HYVPN_PORT:-}"
 LANG_CHOICE="${HYVPN_LANG:-}"
 SETUP_UFW="${HYVPN_UFW:-yes}"
+SETUP_MASQUERADE="${HYVPN_MASQUERADE:-yes}"
 ASSUME_YES="${HYVPN_YES:-no}"
 DRY_RUN="${HYVPN_DRY_RUN:-no}"
 ACTION=install
@@ -353,6 +355,7 @@ Options:
   --lang ru|en           default bot language (default: ru)
   --first-key LABEL      label for the key created after install
   --no-ufw               do not touch the firewall
+  --no-masquerade        do not set up the local masquerade fallback site
   --repo OWNER/NAME      source repository (default: $REPO)
   --ref REF              branch or tag to install (default: $REF)
   -y, --yes              non-interactive: use flags/env and defaults only
@@ -373,10 +376,10 @@ Options:
 
 Every option can also be given as an environment variable:
   HYVPN_DOMAIN, HYVPN_EMAIL, HYVPN_BOT_TOKEN, HYVPN_ADMIN_IDS, HYVPN_LOCATION,
-  HYVPN_PORT, HYVPN_LANG, HYVPN_FIRST_KEY, HYVPN_UFW, HYVPN_YES, HYVPN_REPO,
-  HYVPN_REF, HYVPN_DRY_RUN, HYVPN_IMPORT, HYVPN_IMPORT_USER, HYVPN_IMPORT_KEY,
-  HYVPN_IMPORT_PASSWORD, HYVPN_IMPORT_BUNDLE, HYVPN_IMPORT_SSH_PORT,
-  HYVPN_EXPORT_DIR
+  HYVPN_PORT, HYVPN_LANG, HYVPN_FIRST_KEY, HYVPN_UFW, HYVPN_MASQUERADE,
+  HYVPN_YES, HYVPN_REPO, HYVPN_REF, HYVPN_DRY_RUN, HYVPN_IMPORT,
+  HYVPN_IMPORT_USER, HYVPN_IMPORT_KEY, HYVPN_IMPORT_PASSWORD,
+  HYVPN_IMPORT_BUNDLE, HYVPN_IMPORT_SSH_PORT, HYVPN_EXPORT_DIR
 EOF
 }
 
@@ -392,6 +395,7 @@ parse_args() {
             --lang)       LANG_CHOICE=${2:?}; shift 2 ;;
             --first-key)  FIRST_KEY_LABEL=${2:?}; shift 2 ;;
             --no-ufw)     SETUP_UFW=no; shift ;;
+            --no-masquerade) SETUP_MASQUERADE=no; shift ;;
             --import)     IMPORT_HOST=${2:?}; shift 2 ;;
             --import-user) IMPORT_USER=${2:?}; shift 2 ;;
             --import-key) IMPORT_KEY=${2:?}; IMPORT_AUTH=key; shift 2 ;;
@@ -1152,7 +1156,7 @@ dry_run() { [[ "$DRY_RUN" == "yes" ]]; }
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    local packages=(curl ca-certificates openssl python3 python3-venv python3-pip sqlite3 iproute2 qrencode)
+    local packages=(curl ca-certificates openssl python3 python3-venv python3-pip python3-yaml sqlite3 iproute2 qrencode)
     [[ "$SETUP_UFW" == "yes" ]] && packages+=(ufw)
     apt-get install -y -qq "${packages[@]}" >/dev/null
     ok "packages installed"
@@ -1188,6 +1192,12 @@ create_user_and_dirs() {
     install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DATA_DIR"
     install -d -o root -g "$SERVICE_USER" -m 0750 "$CONF_DIR"
     install -d -o "$HYSTERIA_USER" -g "$SERVICE_USER" -m 0750 "$HYSTERIA_STATE_DIR"
+    # Masquerade state and the local fallback site. hyvpn owns them so the bot
+    # can record probe results; only root writes /etc/hyvpn and restarts units.
+    install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DATA_DIR/masquerade"
+    install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DATA_DIR/masquerade/requests"
+    install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DATA_DIR/masquerade/results"
+    install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$DATA_DIR/masquerade/site"
     ok "user $SERVICE_USER and directories ready"
 }
 
@@ -1209,7 +1219,7 @@ fetch_source() {
 
 copy_source() {
     local item
-    for item in core bot bin systemd hy_core_app.py hy-cli.py hysteria-server.yaml \
+    for item in core bot bin systemd docs hy_core_app.py hy-cli.py hysteria-server.yaml \
                 requirements.txt pyproject.toml README.md; do
         [[ -e "$SOURCE_DIR/$item" ]] || continue
         rm -rf "$INSTALL_DIR/${item:?}"
@@ -1264,6 +1274,18 @@ LOCATION_NAME=$LOCATION
 
 ACME_DIR=$ACME_DIR
 CERT_STATUS_PATH=$CERT_STATUS_PATH
+
+# Masquerade (docs/MASQUERADE.md). Only the fallback site and the candidate
+# registry live here; nothing in this block is a TLS setting.
+MASQ_CONFIG_PATH=$CONF_DIR/masquerade.json
+MASQ_STATE_DIR=$DATA_DIR/masquerade
+MASQ_SITE_DIR=$DATA_DIR/masquerade/site
+MASQ_FRAGMENT_PATH=$CONF_DIR/masquerade.fragment.yaml
+MASQ_RUNTIME_CONFIG=/run/hyvpn/hysteria-server.yaml
+MASQ_TEMPLATE=$INSTALL_DIR/hysteria-server.yaml
+MASQ_BACKUP_DIR=$DATA_DIR/masquerade/backups
+HYSTERIA_BINARY=/usr/local/bin/hysteria
+MASQ_SERVICE=hysteria-server.service
 EOF
 
     write_env "$CONF_DIR/.env.bot" <<EOF
@@ -1282,6 +1304,18 @@ HYSTERIA_STATS_SECRET=$STATS_SECRET
 
 ACME_DIR=$ACME_DIR
 CERT_STATUS_PATH=$CERT_STATUS_PATH
+
+# The bot reads the masquerade state; applying a change is a queued request
+# handled by hy-masqapply.service (root), never by the bot itself.
+MASQ_CONFIG_PATH=$CONF_DIR/masquerade.json
+MASQ_STATE_DIR=$DATA_DIR/masquerade
+MASQ_SITE_DIR=$DATA_DIR/masquerade/site
+MASQ_FRAGMENT_PATH=$CONF_DIR/masquerade.fragment.yaml
+MASQ_RUNTIME_CONFIG=/run/hyvpn/hysteria-server.yaml
+MASQ_TEMPLATE=$INSTALL_DIR/hysteria-server.yaml
+MASQ_BACKUP_DIR=$DATA_DIR/masquerade/backups
+HYSTERIA_BINARY=/usr/local/bin/hysteria
+MASQ_SERVICE=hysteria-server.service
 EOF
 
     write_env "$CONF_DIR/.env.hysteria" <<EOF
@@ -1306,6 +1340,27 @@ render_listen_port() {
     if [[ "$PORT" != "443" ]]; then
         sed -i "s/^listen: :443$/listen: :$PORT/" "$INSTALL_DIR/hysteria-server.yaml"
     fi
+}
+
+setup_masquerade() {
+    # Creates masquerade.json (empty candidate list), the local fallback site
+    # and the initial "file" fragment. No restart: systemd starts Hysteria a
+    # few steps later and the renderer picks the fragment up then.
+    if [[ "$SETUP_MASQUERADE" != "yes" ]]; then
+        info "masquerade: skipped (--no-masquerade)"
+        return 0
+    fi
+    local out
+    if ! out="$(cd "$INSTALL_DIR" && env PYTHONPATH="$INSTALL_DIR" \
+            "$INSTALL_DIR/.venv/bin/python" hy-cli.py masquerade init --no-restart 2>&1)"; then
+        warn "masquerade init failed — the port keeps answering 404 to plain HTTP"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return 0
+    fi
+    printf '%s\n' "$out" | sed 's/^/      /'
+    chown root:"$SERVICE_USER" "$CONF_DIR/masquerade.json" 2>/dev/null || true
+    chmod 0640 "$CONF_DIR/masquerade.json" 2>/dev/null || true
+    ok "маскарад: локальный сайт готов (апстримы добавляются позже)"
 }
 
 install_units() {
@@ -1347,6 +1402,12 @@ start_services() {
     systemctl enable --now hysteria-server.service >/dev/null
     systemctl enable --now hy-bot.service >/dev/null
     systemctl enable --now hy-certwatch.timer >/dev/null 2>&1 || true
+    if [[ "$SETUP_MASQUERADE" == "yes" ]]; then
+        systemctl enable --now hy-masqwatch.timer >/dev/null 2>&1 || \
+            warn "could not enable hy-masqwatch.timer"
+        systemctl enable --now hy-masqapply.path >/dev/null 2>&1 || \
+            warn "could not enable hy-masqapply.path"
+    fi
     systemctl restart hy-core.service hysteria-server.service hy-bot.service
     systemctl start hy-certwatch.service >/dev/null 2>&1 || true
     ok "services started"
@@ -1444,6 +1505,7 @@ $GREEN$BOLD  Готово!$RESET
   ${BOLD}Сертификат${RESET}  $cert_note
   ${BOLD}Бот${RESET}         ${BOT_USERNAME:+@$BOT_USERNAME }— напишите ему /start
   ${BOLD}Админы${RESET}      $ADMIN_IDS
+  ${BOLD}Маскарад${RESET}    $([[ "$SETUP_MASQUERADE" == "yes" ]] && echo "локальный сайт (апстрим не выбран)" || echo "отключён")
   ${BOLD}База${RESET}        $([[ "$IMPORT_MODE" == "none" ]] && echo "новая" || echo "перенесена: $IMPORT_KEYS_TOTAL ключей, ссылки клиентов прежние")
   ${BOLD}QR-коды${RESET}     $([[ "$QR_SUPPORT" == "yes" ]] && echo "включены" || echo "недоступны (не установился Pillow)")
 
@@ -1452,11 +1514,14 @@ $GREEN$BOLD  Готово!$RESET
     hyvpn key add "Иван"      выдать ключ
     hyvpn key ls              список ключей
     hyvpn key limit <id> 50GB лимит трафика
+    hyvpn masquerade status   режим маскарада и апстрим
+    hyvpn masquerade upgrade  подобрать апстрим и применить
     hyvpn logs bot            журнал бота
     hyvpn update              обновить до последней версии
     hyvpn uninstall           удалить
 
-  ${DIM}Конфигурация: $CONF_DIR/.env.*  ·  база: $DATA_DIR/hyvpn.sqlite3${RESET}
+  ${DIM}Конфигурация: $CONF_DIR/.env.*  ·  база: $DATA_DIR/hyvpn.sqlite3
+  Маскарад: $CONF_DIR/masquerade.json  ·  docs/MASQUERADE.md${RESET}
 EOF
 }
 
@@ -1527,9 +1592,9 @@ main() {
 
     banner
     migrate_decide
-    TOTAL_STEPS=11
+    TOTAL_STEPS=12
     if [[ "$IMPORT_MODE" != "none" ]]; then
-        TOTAL_STEPS=12
+        TOTAL_STEPS=13
     fi
 
     step "Проверка системы"
@@ -1564,6 +1629,9 @@ main() {
 
     step "Конфигурация"
     write_env_files
+
+    step "Маскарад"
+    setup_masquerade
 
     if [[ "$IMPORT_MODE" != "none" ]]; then
         step "Перенос базы"

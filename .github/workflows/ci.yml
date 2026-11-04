@@ -100,6 +100,31 @@ jobs:
           bot=$(sed -n 's/^HYSTERIA_STATS_SECRET=//p' /etc/hyvpn/.env.bot)
           hys=$(sed -n 's/^TRAFFIC_STATS_SECRET=//p' /etc/hyvpn/.env.hysteria)
           test -n "$core" && test "$core" = "$bot" && test "$core" = "$hys"
+      - name: Masquerade artefacts are in place
+        run: |
+          set -eux
+          # The fallback site, the registry and the initial fragment.
+          test -f /var/lib/hyvpn/masquerade/site/index.html
+          test -f /var/lib/hyvpn/masquerade/site/style.css
+          test -f /var/lib/hyvpn/masquerade/site/favicon.svg
+          test -d /var/lib/hyvpn/masquerade/requests
+          grep -q 'vpn.example.com' /var/lib/hyvpn/masquerade/site/index.html
+          test "$(stat -c '%a %U:%G' /etc/hyvpn/masquerade.json)" = "640 root:hyvpn"
+          grep -q '"mode": "auto"' /etc/hyvpn/masquerade.json
+          grep -q 'type: file' /etc/hyvpn/masquerade.fragment.yaml
+          test "$(stat -c '%a %U:%G' /etc/hyvpn/masquerade.fragment.yaml)" = "640 root:hyvpn"
+          # The template still owns TLS, and the fragment is a separate file.
+          grep -q 'ACME_DOMAIN' /opt/hyvpn/hysteria-server.yaml
+          test -f /opt/hyvpn/systemd/hy-masqwatch.timer
+          test -f /opt/hyvpn/systemd/hy-masqapply.path
+      - name: The masquerade CLI works
+        run: |
+          set -eux
+          cd /opt/hyvpn
+          .venv/bin/python hy-cli.py masquerade status --json | tee /tmp/masq.json
+          grep -q '"configured_mode": "auto"' /tmp/masq.json
+          .venv/bin/python hy-cli.py masquerade check || true
+          .venv/bin/python hy-cli.py masquerade doctor --json | head -c 400
       - name: The CLI works as the service user
         run: |
           cd /opt/hyvpn

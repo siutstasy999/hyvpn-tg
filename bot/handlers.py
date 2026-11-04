@@ -183,7 +183,175 @@ async def _server_screen(
         traffic=summary["upload"] + summary["download"],
         cert=await certs.get(),
     )
-    return text, ui.kb_back(lang, "menu")
+    return text, ui.kb_server(lang)
+
+
+# --------------------------------------------------------------------------- #
+# masquerade
+# --------------------------------------------------------------------------- #
+#
+# Access control: every callback below is only reachable through
+# WhitelistMiddleware, which drops updates from anyone not in ALLOWED_TG_IDS.
+# In this deployment model those IDs *are* the administrators; VPN subscribers
+# never interact with the bot. Changes are not executed here either: the bot
+# queues a request and a root systemd unit applies it.
+
+
+async def _masq_status(masq: services.MasqWatcher, *, force: bool = False):
+    return await masq.status(force=force)
+
+
+async def cmd_masq(
+    message: Message,
+    state: FSMContext,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    await state.clear()
+    status = await _masq_status(masq, force=True)
+    await message.answer(
+        ui.screen_masquerade(lang, status), reply_markup=ui.kb_masquerade(lang)
+    )
+
+
+async def cb_masq(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    status = await _masq_status(masq, force=True)
+    await _edit(call, ui.screen_masquerade(lang, status), ui.kb_masquerade(lang))
+    await call.answer()
+
+
+async def cb_masq_check(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    await call.answer(t(lang, "toast_masq_running"))
+    try:
+        report = await masq.check()
+    except Exception as exc:  # noqa: BLE001 - never break the event loop
+        log.warning("masquerade check failed: %s", exc)
+        await _edit(call, t(lang, "toast_masq_failed"), ui.kb_masq_back(lang))
+        return
+    await _edit(call, ui.screen_masq_check(lang, report), ui.kb_masq_back(lang))
+
+
+async def cb_masq_test(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    await call.answer(t(lang, "toast_masq_running"))
+    try:
+        await masq.test_candidates()
+        status = await _masq_status(masq, force=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("candidate test failed: %s", exc)
+        await _edit(call, t(lang, "toast_masq_failed"), ui.kb_masq_back(lang))
+        return
+    await _edit(call, ui.screen_masq_candidates(lang, status), ui.kb_masq_back(lang))
+
+
+async def cb_masq_cands(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    status = await _masq_status(masq)
+    await _edit(call, ui.screen_masq_candidates(lang, status), ui.kb_masq_back(lang))
+    await call.answer()
+
+
+async def cb_masq_plan(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    await call.answer(t(lang, "toast_masq_running"))
+    try:
+        plan = await masq.plan()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("masquerade plan failed: %s", exc)
+        await _edit(call, t(lang, "toast_masq_failed"), ui.kb_masq_back(lang))
+        return
+    can_apply = bool(plan.changed and not plan.blocked)
+    await _edit(call, ui.screen_masq_plan(lang, plan), ui.kb_masq_plan(lang, can_apply=can_apply))
+
+
+async def cb_masq_apply(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    try:
+        request_id = await masq.submit(
+            "optimize",
+            requested_by=call.from_user.id if call.from_user else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not queue the masquerade request: %s", exc)
+        await call.answer(t(lang, "toast_masq_failed"), show_alert=True)
+        return
+    await _edit(call, ui.screen_masq_queued(lang, request_id), ui.kb_masq_back(lang))
+    await call.answer(t(lang, "toast_masq_queued"))
+
+
+async def cb_masq_modes(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    status = await _masq_status(masq)
+    await _edit(
+        call,
+        ui.screen_masq_modes(lang, status.effective_mode),
+        ui.kb_masq_modes(lang, status.configured_mode),
+    )
+    await call.answer()
+
+
+async def cb_masq_set(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    mode = call.data.split(":", 2)[2]
+    if mode not in {"auto", "file", "proxy", "none", "string"}:
+        await call.answer(t(lang, "toast_masq_failed"), show_alert=True)
+        return
+    try:
+        request_id = await masq.submit(
+            "set-mode",
+            payload={"mode": mode},
+            requested_by=call.from_user.id if call.from_user else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not queue the mode change: %s", exc)
+        await call.answer(t(lang, "toast_masq_failed"), show_alert=True)
+        return
+    await _edit(
+        call,
+        ui.screen_masq_queued(lang, request_id, mode=mode),
+        ui.kb_masq_back(lang),
+    )
+    await call.answer(t(lang, "toast_masq_queued"))
+
+
+async def cb_masq_results(
+    call: CallbackQuery,
+    lang: str,
+    masq: services.MasqWatcher,
+) -> None:
+    try:
+        results = await masq.results(limit=3)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not read masquerade results: %s", exc)
+        results = []
+    await _edit(call, ui.screen_masq_results(lang, results), ui.kb_masq_back(lang))
+    await call.answer()
 
 
 async def _send_new_key(
@@ -654,6 +822,7 @@ def build_router() -> Router:
     router.message.register(cmd_server, Command("server", "status"))
     router.message.register(cmd_new, Command("new", "newkey"))
     router.message.register(cmd_revoke, Command("revoke", "delkey"))
+    router.message.register(cmd_masq, Command("masq", "masquerade"))
 
     router.message.register(input_new_label, NewKey.label)
     router.message.register(input_rename_label, RenameKey.label)
@@ -676,6 +845,17 @@ def build_router() -> Router:
     router.callback_query.register(cb_limit_off, F.data.startswith("limoff:"))
     router.callback_query.register(cb_revoke_confirm, F.data.startswith("askrev:"))
     router.callback_query.register(cb_revoke_do, F.data.startswith("dorev:"))
+    # Masquerade. Exact matches are registered before the prefix handlers so
+    # "masq:set:<mode>" is the only prefix that can reach cb_masq_set.
+    router.callback_query.register(cb_masq, F.data == "masq")
+    router.callback_query.register(cb_masq_check, F.data == "masq:check")
+    router.callback_query.register(cb_masq_test, F.data == "masq:test")
+    router.callback_query.register(cb_masq_plan, F.data == "masq:plan")
+    router.callback_query.register(cb_masq_apply, F.data == "masq:apply")
+    router.callback_query.register(cb_masq_cands, F.data == "masq:cands")
+    router.callback_query.register(cb_masq_modes, F.data == "masq:modes")
+    router.callback_query.register(cb_masq_results, F.data == "masq:results")
+    router.callback_query.register(cb_masq_set, F.data.startswith("masq:set:"))
 
     # Anything else from a whitelisted user simply shows the menu.
     router.message.register(fallback)

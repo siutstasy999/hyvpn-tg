@@ -24,7 +24,7 @@ Interface languages: Russian and English.
           │                                     └── 🗑 Отозвать → подтверждение
           ├── ➕ Новый ключ (спросит название)
           ├── 📊 Статистика (топ по трафику + итог)
-          ├── 🖥 Сервер (сертификат, онлайн, итоги)
+          ├── 🖥 Сервер (сертификат, онлайн, итоги) ── 🕸 Маскарад
           ├── 🌐 Язык (Русский / English)
           └── ℹ️ Справка
 ```
@@ -38,10 +38,24 @@ Interface languages: Russian and English.
 | `/keys`, `/list` | key list |
 | `/stats` | traffic statistics |
 | `/server`, `/status` | server state and certificate expiry |
+| `/masq`, `/masquerade` | masquerade: mode, upstream, checks |
 | `/lang` | switch interface language |
 | `/revoke <id>`, `/delkey <id>` | revoke a key by id |
 | `/help` | help screen |
 | `/id` | your Telegram ID |
+
+## Masquerade
+
+The 🕸 screen shows the active mode, the upstream, its health, the last check,
+the certificate and whether the local fallback site is ready. Buttons run a
+diagnostic, probe every candidate, compute a proposal (`optimize`, dry-run) or
+queue an apply.
+
+The bot cannot write `/etc/hyvpn` or restart a unit: it runs as `hyvpn`.
+`MasqWatcher` reads state and probes in a worker thread, and "Apply" only
+drops a request file into `/var/lib/hyvpn/masquerade/requests`. The root unit
+`hy-masqapply.service` (started by `hy-masqapply.path`) executes it and writes a
+result the 📜 Results screen shows. See `docs/MASQUERADE.md`.
 
 ## Access control
 

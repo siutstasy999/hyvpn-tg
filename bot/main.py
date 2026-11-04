@@ -21,7 +21,17 @@ from .middlewares import LanguageMiddleware, WhitelistMiddleware
 
 log = logging.getLogger("hy-bot")
 
-COMMAND_ORDER = ("start", "new", "keys", "stats", "server", "lang", "help", "id")
+COMMAND_ORDER = (
+    "start",
+    "new",
+    "keys",
+    "stats",
+    "server",
+    "masq",
+    "lang",
+    "help",
+    "id",
+)
 
 
 def commands_for(lang: str) -> list[BotCommand]:
@@ -37,9 +47,11 @@ def build_dispatcher(
     live: services.LiveStats,
     certs: services.CertWatcher | None = None,
     langs: services.LangStore | None = None,
+    masq: services.MasqWatcher | None = None,
 ) -> Dispatcher:
     certs = certs or services.CertWatcher(settings)
     langs = langs or services.LangStore(settings)
+    masq = masq or services.MasqWatcher(settings)
 
     dispatcher = Dispatcher(
         storage=MemoryStorage(),
@@ -47,6 +59,7 @@ def build_dispatcher(
         live=live,
         certs=certs,
         langs=langs,
+        masq=masq,
     )
 
     guard = WhitelistMiddleware(settings.allowed_ids, langs)
@@ -105,6 +118,19 @@ async def run() -> None:
     else:
         log.warning("certificate state unknown: %s", cert.error)
 
+    masq = services.MasqWatcher(settings)
+    try:
+        status = await masq.status(force=True)
+        log.info(
+            "masquerade: mode=%s upstream=%s candidates=%s/%s",
+            status.effective_mode,
+            status.upstream or "local fallback",
+            status.candidates_enabled,
+            status.candidates_total,
+        )
+    except Exception as exc:  # pragma: no cover - the bot must still start
+        log.warning("masquerade state unavailable: %s", exc)
+
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(
@@ -112,7 +138,7 @@ async def run() -> None:
             link_preview_is_disabled=True,
         ),
     )
-    dispatcher = build_dispatcher(settings, live, certs)
+    dispatcher = build_dispatcher(settings, live, certs, masq=masq)
 
     me = await bot.get_me()
     await _publish_commands(bot, settings.default_lang)
